@@ -38,6 +38,8 @@ namespace {
 
     static constexpr size_t kMinAllocBytesForEviction = 1024*1024*15;
     static constexpr size_t kMinBufferCountForEviction = 25;
+    static constexpr size_t kMaxUnusedBufferCount = 64;
+    static constexpr size_t kUnusedBufferCountTarget = kMaxUnusedBufferCount - 16;
 }
 
 // Buffer structure in bufferpool process
@@ -705,9 +707,11 @@ ResultStatus Accessor::Impl::BufferPool::addNewBuffer(
 }
 
 void Accessor::Impl::BufferPool::cleanUp(bool clearCache) {
-    if (clearCache || mTimestampUs > mLastCleanUpUs + kCleanUpDurationUs) {
+    if (clearCache || mTimestampUs > mLastCleanUpUs + kCleanUpDurationUs ||
+            mStats.buffersNotInUse() > kMaxUnusedBufferCount) {
         mLastCleanUpUs = mTimestampUs;
-        if (mTimestampUs > mLastLogUs + kLogDurationUs) {
+        if (mTimestampUs > mLastLogUs + kLogDurationUs ||
+                mStats.buffersNotInUse() > kMaxUnusedBufferCount) {
             mLastLogUs = mTimestampUs;
             ALOGD("bufferpool2 %p : %zu(%zu size) total buffers - "
                   "%zu(%zu size) used buffers - %zu/%zu (recycle/alloc) - "
@@ -718,8 +722,9 @@ void Accessor::Impl::BufferPool::cleanUp(bool clearCache) {
                   mStats.mTotalFetches, mStats.mTotalTransfers);
         }
         for (auto freeIt = mFreeBuffers.begin(); freeIt != mFreeBuffers.end();) {
-            if (!clearCache && (mStats.mSizeCached < kMinAllocBytesForEviction
-                    || mBuffers.size() < kMinBufferCountForEviction)) {
+            if (!clearCache && mStats.buffersNotInUse() <= kUnusedBufferCountTarget &&
+                    (mStats.mSizeCached < kMinAllocBytesForEviction ||
+                     mBuffers.size() < kMinBufferCountForEviction)) {
                 break;
             }
             auto it = mBuffers.find(*freeIt);
