@@ -238,7 +238,12 @@ media_status_t VideoTrackTranscoder::configureDestinationFormat(
     int32_t operatingRate = getDefaultOperatingRate(encoderFormat);
 
     if (operatingRate != -1) {
-        SetDefaultFormatValueInt32(AMEDIAFORMAT_KEY_OPERATING_RATE, encoderFormat, operatingRate);
+        float tmpf;
+        int32_t tmpi;
+        if (!AMediaFormat_getFloat(encoderFormat, AMEDIAFORMAT_KEY_OPERATING_RATE, &tmpf) &&
+            !AMediaFormat_getInt32(encoderFormat, AMEDIAFORMAT_KEY_OPERATING_RATE, &tmpi)) {
+            AMediaFormat_setInt32(encoderFormat, AMEDIAFORMAT_KEY_OPERATING_RATE, operatingRate);
+        }
     }
 
     SetDefaultFormatValueInt32(AMEDIAFORMAT_KEY_PRIORITY, encoderFormat, kDefaultCodecPriority);
@@ -260,8 +265,8 @@ media_status_t VideoTrackTranscoder::configureDestinationFormat(
         return AMEDIA_ERROR_INVALID_PARAMETER;
     }
 
-    // TODO: replace __ANDROID_API_FUTURE__with 31 when it's official (b/178144708)
-    #define __TRANSCODING_MIN_API__ __ANDROID_API_FUTURE__
+// TODO: replace __ANDROID_API_FUTURE__with 31 when it's official (b/178144708)
+#define __TRANSCODING_MIN_API__ __ANDROID_API_FUTURE__
 
     AMediaCodec* encoder;
     if (__builtin_available(android __TRANSCODING_MIN_API__, *)) {
@@ -396,6 +401,10 @@ void VideoTrackTranscoder::enqueueInputSample(int32_t bufferIndex) {
             mStatus = status;
             return;
         }
+
+        if (mSampleInfo.size) {
+            ++mInputFrameCount;
+        }
     } else {
         LOG(DEBUG) << "EOS from source.";
         mEosFromSource = true;
@@ -445,6 +454,9 @@ void VideoTrackTranscoder::dequeueOutputSample(int32_t bufferIndex,
         sample->info.flags = bufferInfo.flags;
         sample->info.presentationTimeUs = bufferInfo.presentationTimeUs;
 
+        if (bufferInfo.size > 0 && (bufferInfo.flags & SAMPLE_FLAG_CODEC_CONFIG) == 0) {
+            ++mOutputFrameCount;
+        }
         onOutputSampleAvailable(sample);
 
         mLastSampleWasSync = sample->info.flags & SAMPLE_FLAG_SYNC_SAMPLE;
@@ -456,6 +468,15 @@ void VideoTrackTranscoder::dequeueOutputSample(int32_t bufferIndex,
     if (bufferInfo.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) {
         LOG(DEBUG) << "EOS from encoder.";
         mEosFromEncoder = true;
+
+        if (mInputFrameCount != mOutputFrameCount) {
+            LOG(WARNING) << "Input / Output frame count mismatch: " << mInputFrameCount << " vs "
+                         << mOutputFrameCount;
+            if (mInputFrameCount > 0 && mOutputFrameCount == 0) {
+                LOG(ERROR) << "Encoder did not produce any output frames.";
+                mStatus = AMEDIA_ERROR_UNKNOWN;
+            }
+        }
     }
 }
 

@@ -19,6 +19,7 @@
 
 #include <aidl/android/media/tv/tuner/BnTunerFilter.h>
 #include <aidl/android/media/tv/tuner/ITunerFilterCallback.h>
+#include <aidlcommonsupport/NativeHandle.h>
 #include <android/hardware/tv/tuner/1.1/IFilter.h>
 #include <android/hardware/tv/tuner/1.0/ITuner.h>
 #include <media/stagefright/foundation/ADebug.h>
@@ -26,13 +27,19 @@
 using Status = ::ndk::ScopedAStatus;
 using ::aidl::android::media::tv::tuner::BnTunerFilter;
 using ::aidl::android::media::tv::tuner::ITunerFilterCallback;
+using ::aidl::android::media::tv::tuner::TunerFilterConfiguration;
+using ::aidl::android::media::tv::tuner::TunerFilterEvent;
+using ::aidl::android::media::tv::tuner::TunerFilterMediaEvent;
+using ::aidl::android::media::tv::tuner::TunerFilterSharedHandleInfo;
+using ::aidl::android::media::tv::tuner::TunerFilterSettings;
 using ::android::hardware::Return;
 using ::android::hardware::Void;
+using ::android::hardware::tv::tuner::V1_0::DemuxFilterAvSettings;
 using ::android::hardware::tv::tuner::V1_0::DemuxFilterEvent;
+using ::android::hardware::tv::tuner::V1_0::DemuxFilterMediaEvent;
 using ::android::hardware::tv::tuner::V1_0::DemuxFilterStatus;
 using ::android::hardware::tv::tuner::V1_0::IFilter;
 using ::android::hardware::tv::tuner::V1_0::IFilterCallback;
-
 
 namespace android {
 
@@ -43,6 +50,15 @@ public:
     virtual ~TunerFilter();
     Status getId(int32_t* _aidl_return) override;
     Status getId64Bit(int64_t* _aidl_return) override;
+    Status configure(const TunerFilterConfiguration& config) override;
+    Status getAvSharedHandleInfo(TunerFilterSharedHandleInfo* _aidl_return) override;
+    Status releaseAvHandle(const ::aidl::android::hardware::common::NativeHandle& handle,
+            int64_t avDataId) override;
+    Status start() override;
+    Status stop() override;
+    Status flush() override;
+    Status close() override;
+    sp<IFilter> getHalFilter();
 
     struct FilterCallback : public IFilterCallback {
         FilterCallback(const std::shared_ptr<ITunerFilterCallback> tunerFilterCallback)
@@ -50,11 +66,14 @@ public:
 
         virtual Return<void> onFilterEvent(const DemuxFilterEvent& filterEvent);
         virtual Return<void> onFilterStatus(DemuxFilterStatus status);
+        void getMediaEvent(
+                std::vector<DemuxFilterEvent::Event>& events, std::vector<TunerFilterEvent>& res);
 
         std::shared_ptr<ITunerFilterCallback> mTunerFilterCallback;
     };
 
 private:
+    DemuxFilterAvSettings getAvSettings(const TunerFilterSettings& settings);
     sp<IFilter> mFilter;
     sp<::android::hardware::tv::tuner::V1_1::IFilter> mFilter_1_1;
     sp<IFilterCallback> mFilterCallback;
