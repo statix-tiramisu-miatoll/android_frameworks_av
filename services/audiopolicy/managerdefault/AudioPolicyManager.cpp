@@ -2228,7 +2228,9 @@ status_t AudioPolicyManager::getInputForAttr(const audio_attributes_t *attr,
         } else {
             // Prevent from storing invalid requested device id in clients
             requestedDeviceId = AUDIO_PORT_HANDLE_NONE;
-            device = mEngine->getInputDeviceForAttributes(attributes, &policyMix);
+            device = mEngine->getInputDeviceForAttributes(attributes, uid, &policyMix);
+            ALOGV_IF(device != nullptr, "%s found device type is 0x%X",
+                __FUNCTION__, device->type());
         }
         if (device == nullptr) {
             ALOGW("getInputForAttr() could not find device for source %d", attributes.source);
@@ -2344,6 +2346,21 @@ audio_io_handle_t AudioPolicyManager::getInputForDevice(const sp<DeviceDescripto
     if (profile->getModuleHandle() == 0) {
         ALOGE("getInputForAttr(): HW module %s not opened", profile->getModuleName());
         return input;
+    }
+
+    // Reuse an already opened input if a client with the same session ID already exists
+    // on that input
+    for (size_t i = 0; i < mInputs.size(); i++) {
+        sp <AudioInputDescriptor> desc = mInputs.valueAt(i);
+        if (desc->mProfile != profile) {
+            continue;
+        }
+        RecordClientVector clients = desc->clientsList();
+        for (const auto &client : clients) {
+            if (session == client->session()) {
+                return desc->mIoHandle;
+            }
+        }
     }
 
     if (!profile->canOpenNewIo()) {
@@ -2614,7 +2631,7 @@ void AudioPolicyManager::checkCloseInputs() {
             bool close = false;
             for (const auto& client : input->clientsList()) {
                 sp<DeviceDescriptor> device =
-                    mEngine->getInputDeviceForAttributes(client->attributes());
+                    mEngine->getInputDeviceForAttributes(client->attributes(), client->uid());
                 if (!input->supportedDevices().contains(device)) {
                     close = true;
                     break;
@@ -5858,12 +5875,22 @@ sp<DeviceDescriptor> AudioPolicyManager::getNewInputDevice(
 
     // If we are not in call and no client is active on this input, this methods returns
     // a null sp<>, causing the patch on the input stream to be released.
-    audio_attributes_t attributes = inputDesc->getHighestPriorityAttributes();
+    audio_attributes_t attributes;
+    uid_t uid;
+    sp<RecordClientDescriptor> topClient = inputDesc->getHighestPriorityClient();
+    if (topClient != nullptr) {
+      attributes = topClient->attributes();
+      uid = topClient->uid();
+    } else {
+      attributes = { .source = AUDIO_SOURCE_DEFAULT };
+      uid = 0;
+    }
+
     if (attributes.source == AUDIO_SOURCE_DEFAULT && isInCall()) {
         attributes.source = AUDIO_SOURCE_VOICE_COMMUNICATION;
     }
     if (attributes.source != AUDIO_SOURCE_DEFAULT) {
-        device = mEngine->getInputDeviceForAttributes(attributes);
+        device = mEngine->getInputDeviceForAttributes(attributes, uid);
     }
 
     return device;
