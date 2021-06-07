@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <inttypes.h>
+#include <map>
 #include <math.h>
 #include <set>
 #include <unordered_set>
@@ -52,7 +53,7 @@
 
 namespace android {
 
-using media::permission::Identity;
+using content::AttributionSourceState;
 
 //FIXME: workaround for truncated touch sounds
 // to be removed when the problem is handled by system UI
@@ -1132,7 +1133,7 @@ status_t AudioPolicyManager::getOutputForAttr(const audio_attributes_t *attr,
                                               audio_io_handle_t *output,
                                               audio_session_t session,
                                               audio_stream_type_t *stream,
-                                              const Identity& identity,
+                                              const AttributionSourceState& attributionSource,
                                               const audio_config_t *config,
                                               audio_output_flags_t *flags,
                                               audio_port_handle_t *selectedDeviceId,
@@ -1145,7 +1146,7 @@ status_t AudioPolicyManager::getOutputForAttr(const audio_attributes_t *attr,
         return INVALID_OPERATION;
     }
     const uid_t uid = VALUE_OR_RETURN_STATUS(
-        aidl2legacy_int32_t_uid_t(identity.uid));
+        aidl2legacy_int32_t_uid_t(attributionSource.uid));
     const audio_port_handle_t requestedPortId = *selectedDeviceId;
     audio_attributes_t resultAttr;
     bool isRequestedDeviceForExclusiveUse = false;
@@ -2114,7 +2115,7 @@ status_t AudioPolicyManager::getInputForAttr(const audio_attributes_t *attr,
                                              audio_io_handle_t *input,
                                              audio_unique_id_t riid,
                                              audio_session_t session,
-                                             const Identity& identity,
+                                             const AttributionSourceState& attributionSource,
                                              const audio_config_base_t *config,
                                              audio_input_flags_t flags,
                                              audio_port_handle_t *selectedDeviceId,
@@ -2133,7 +2134,7 @@ status_t AudioPolicyManager::getInputForAttr(const audio_attributes_t *attr,
     sp<AudioInputDescriptor> inputDesc;
     sp<RecordClientDescriptor> clientDesc;
     audio_port_handle_t requestedDeviceId = *selectedDeviceId;
-    uid_t uid = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_uid_t(identity.uid));
+    uid_t uid = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_uid_t(attributionSource.uid));
     bool isSoundTrigger;
 
     // The supplied portId must be AUDIO_PORT_HANDLE_NONE
@@ -5694,6 +5695,7 @@ void AudioPolicyManager::checkOutputForAllStrategies()
 
 void AudioPolicyManager::checkSecondaryOutputs() {
     std::set<audio_stream_type_t> streamsToInvalidate;
+    TrackSecondaryOutputsMap trackSecondaryOutputs;
     for (size_t i = 0; i < mOutputs.size(); i++) {
         const sp<SwAudioOutputDescriptor>& outputDescriptor = mOutputs[i];
         for (const sp<TrackClientDescriptor>& client : outputDescriptor->getClientIterable()) {
@@ -5710,16 +5712,28 @@ void AudioPolicyManager::checkSecondaryOutputs() {
                 }
             }
 
-            if (status != OK ||
-                !std::equal(client->getSecondaryOutputs().begin(),
-                            client->getSecondaryOutputs().end(),
-                            secondaryDescs.begin(), secondaryDescs.end())) {
+            if (status != OK) {
                 streamsToInvalidate.insert(client->stream());
+            } else if (!std::equal(
+                    client->getSecondaryOutputs().begin(),
+                    client->getSecondaryOutputs().end(),
+                    secondaryDescs.begin(), secondaryDescs.end())) {
+                std::vector<wp<SwAudioOutputDescriptor>> weakSecondaryDescs;
+                std::vector<audio_io_handle_t> secondaryOutputIds;
+                for (const auto& secondaryDesc : secondaryDescs) {
+                    secondaryOutputIds.push_back(secondaryDesc->mIoHandle);
+                    weakSecondaryDescs.push_back(secondaryDesc);
+                }
+                trackSecondaryOutputs.emplace(client->portId(), secondaryOutputIds);
+                client->setSecondaryOutputs(std::move(weakSecondaryDescs));
             }
         }
     }
+    if (!trackSecondaryOutputs.empty()) {
+        mpClientInterface->updateSecondaryOutputs(trackSecondaryOutputs);
+    }
     for (audio_stream_type_t stream : streamsToInvalidate) {
-        ALOGD("%s Invalidate stream %d due to secondary output change", __func__, stream);
+        ALOGD("%s Invalidate stream %d due to fail getting output for attr", __func__, stream);
         mpClientInterface->invalidateStream(stream);
     }
 }

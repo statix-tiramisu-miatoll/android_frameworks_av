@@ -918,7 +918,7 @@ public:
                                 audio_session_t sessionId,
                                 audio_output_flags_t *flags,
                                 pid_t creatorPid,
-                                const media::permission::Identity& identity,
+                                const AttributionSourceState& attributionSource,
                                 pid_t tid,
                                 status_t *status /*non-NULL*/,
                                 audio_port_handle_t portId,
@@ -1012,6 +1012,8 @@ public:
                     Mutex::Autolock _l(mLock);
                     mDownStreamPatch = *patch;
                 }
+
+                PlaybackThread::Track* getTrackById_l(audio_port_handle_t trackId);
 
 protected:
     // updated by readOutputParameters_l()
@@ -1696,7 +1698,7 @@ public:
                     audio_session_t sessionId,
                     size_t *pNotificationFrameCount,
                     pid_t creatorPid,
-                    const media::permission::Identity& identity,
+                    const AttributionSourceState& attributionSource,
                     audio_input_flags_t *flags,
                     pid_t tid,
                     status_t *status /*non-NULL*/,
