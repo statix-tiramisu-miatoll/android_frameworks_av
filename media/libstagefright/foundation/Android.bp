@@ -1,3 +1,22 @@
+package {
+    default_applicable_licenses: [
+        "frameworks_av_media_libstagefright_foundation_license",
+    ],
+}
+
+// Added automatically by a large-scale-change
+// See: http://go/android-license-faq
+license {
+    name: "frameworks_av_media_libstagefright_foundation_license",
+    visibility: [":__subpackages__"],
+    license_kinds: [
+        "SPDX-license-identifier-Apache-2.0",
+    ],
+    license_text: [
+        "NOTICE",
+    ],
+}
+
 cc_library_headers {
     name: "libstagefright_foundation_headers",
     export_include_dirs: ["include"],
@@ -12,6 +31,7 @@ cc_defaults {
     vndk: {
         enabled: true,
     },
+    host_supported: true,
     double_loadable: true,
     include_dirs: [
         "frameworks/av/include",
@@ -25,7 +45,9 @@ cc_defaults {
     ],
 
     header_libs: [
-        "libhardware_headers",
+        // this is only needed for the vendor variant that removes libbinder, but vendor
+        // target below does not allow adding header_libs.
+        "libbinder_headers",
         "libstagefright_foundation_headers",
         "media_ndk_headers",
         "media_plugin_headers",
@@ -79,12 +101,21 @@ cc_defaults {
 
     target: {
         vendor: {
+            // TODO: add libbinder_headers here instead of above when it becomes supported
             exclude_shared_libs: [
                 "libbinder",
             ],
             cflags: [
                 "-DNO_IMEMORY",
             ],
+        },
+        apex: {
+            exclude_shared_libs: [
+                "libbinder",
+            ],
+        },
+        darwin: {
+            enabled: false,
         },
     },
 

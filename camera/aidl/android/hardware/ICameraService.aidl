@@ -20,6 +20,8 @@ import android.hardware.ICamera;
 import android.hardware.ICameraClient;
 import android.hardware.camera2.ICameraDeviceUser;
 import android.hardware.camera2.ICameraDeviceCallbacks;
+import android.hardware.camera2.ICameraInjectionCallback;
+import android.hardware.camera2.ICameraInjectionSession;
 import android.hardware.camera2.params.VendorTagDescriptor;
 import android.hardware.camera2.params.VendorTagDescriptorCache;
 import android.hardware.camera2.utils.ConcurrentCameraIdCombination;
@@ -69,7 +71,7 @@ interface ICameraService
 
     /**
      * Default UID/PID values for non-privileged callers of
-     * connect(), connectDevice(), and connectLegacy()
+     * connect() and connectDevice()
      */
     const int USE_CALLING_UID = -1;
     const int USE_CALLING_PID = -1;
@@ -90,21 +92,7 @@ interface ICameraService
             String cameraId,
             String opPackageName,
             @nullable String featureId,
-            int clientUid);
-
-    /**
-     * halVersion constant for connectLegacy
-     */
-    const int CAMERA_HAL_API_VERSION_UNSPECIFIED = -1;
-
-    /**
-     * Open a camera device in legacy mode, if supported by the camera module HAL.
-     */
-    ICamera connectLegacy(ICameraClient client,
-            int cameraId,
-            int halVersion,
-            String opPackageName,
-            int clientUid);
+            int clientUid, int oomScoreOffset);
 
     /**
      * Add listener for changes to camera device and flashlight state.
@@ -175,6 +163,9 @@ interface ICameraService
     boolean supportsCameraApi(String cameraId, int apiVersion);
     // Determines if a cameraId is a hidden physical camera of a logical multi-camera.
     boolean isHiddenPhysicalCamera(String cameraId);
+    // Inject the external camera to replace the internal camera session.
+    ICameraInjectionSession injectCamera(String packageName, String internalCamId,
+            String externalCamId, in ICameraInjectionCallback CameraInjectionCallback);
 
     void setTorchMode(String cameraId, boolean enabled, IBinder clientBinder);
 
@@ -186,6 +177,13 @@ interface ICameraService
     const int EVENT_NONE = 0;
     const int EVENT_USER_SWITCHED = 1; // The argument is the set of new foreground user IDs.
     oneway void notifySystemEvent(int eventId, in int[] args);
+
+    /**
+     * Notify the camera service of a display configuration change.
+     *
+     * Callers require the android.permission.CAMERA_SEND_SYSTEM_EVENTS permission.
+     */
+    oneway void notifyDisplayConfigurationChange();
 
     /**
      * Notify the camera service of a device physical status change. May only be called from
