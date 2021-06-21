@@ -882,10 +882,14 @@ void C2SoftAacDec::process(
             work->worklets.front()->output.configUpdate.push_back(
                     C2Param::Copy(currentBoostFactor));
 
-            C2StreamDrcCompressionModeTuning::input currentCompressMode(0u,
-                    (C2Config::drc_compression_mode_t) compressMode);
-            work->worklets.front()->output.configUpdate.push_back(
-                    C2Param::Copy(currentCompressMode));
+            if (android_get_device_api_level() < __ANDROID_API_S__) {
+                // We used to report DRC compression mode in the output format
+                // in Q and R, but stopped doing that in S
+                C2StreamDrcCompressionModeTuning::input currentCompressMode(0u,
+                        (C2Config::drc_compression_mode_t) compressMode);
+                work->worklets.front()->output.configUpdate.push_back(
+                        C2Param::Copy(currentCompressMode));
+            }
 
             C2StreamDrcEncodedTargetLevelTuning::input currentEncodedTargetLevel(0u,
                     (C2FloatValue) (encTargetLevel*-0.25));
@@ -1089,11 +1093,13 @@ private:
 
 }  // namespace android
 
+__attribute__((cfi_canonical_jump_table))
 extern "C" ::C2ComponentFactory* CreateCodec2Factory() {
     ALOGV("in %s", __func__);
     return new ::android::C2SoftAacDecFactory();
 }
 
+__attribute__((cfi_canonical_jump_table))
 extern "C" void DestroyCodec2Factory(::C2ComponentFactory* factory) {
     ALOGV("in %s", __func__);
     delete factory;

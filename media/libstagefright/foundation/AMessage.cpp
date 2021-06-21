@@ -33,7 +33,7 @@
 
 #include <media/stagefright/foundation/hexdump.h>
 
-#ifndef __ANDROID_VNDK__
+#if !defined(__ANDROID_VNDK__) && !defined(__ANDROID_APEX__)
 #include <binder/Parcel.h>
 #endif
 
@@ -646,7 +646,7 @@ AString AMessage::debugString(int32_t indent) const {
     return s;
 }
 
-#ifndef __ANDROID_VNDK__
+#if !defined(__ANDROID_VNDK__) && !defined(__ANDROID_APEX__)
 // static
 sp<AMessage> AMessage::FromParcel(const Parcel &parcel, size_t maxNestingLevel) {
     int32_t what = parcel.readInt32();
@@ -813,7 +813,7 @@ void AMessage::writeToParcel(Parcel *parcel) const {
         }
     }
 }
-#endif  // __ANDROID_VNDK__
+#endif  // !defined(__ANDROID_VNDK__) && !defined(__ANDROID_APEX__)
 
 sp<AMessage> AMessage::changesFrom(const sp<const AMessage> &other, bool deep) const {
     if (other == NULL) {
@@ -1076,6 +1076,17 @@ status_t AMessage::removeEntryAt(size_t index) {
         mItems[mNumItems].mType = kTypeInt32;
     }
     return OK;
+}
+
+status_t AMessage::removeEntryByName(const char *name) {
+    if (name == nullptr) {
+        return BAD_VALUE;
+    }
+    size_t index = findEntryByName(name);
+    if (index >= mNumItems) {
+        return BAD_INDEX;
+    }
+    return removeEntryAt(index);
 }
 
 void AMessage::setItem(const char *name, const ItemData &item) {
