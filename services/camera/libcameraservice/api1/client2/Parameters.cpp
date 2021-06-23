@@ -29,13 +29,14 @@
 
 #include "Parameters.h"
 #include "system/camera.h"
-#include "hardware/camera_common.h"
 #include <android/hardware/ICamera.h>
 #include <media/MediaProfiles.h>
 #include <media/mediarecorder.h>
 
 namespace android {
 namespace camera2 {
+
+using android::camera3::CAMERA_TEMPLATE_PREVIEW;
 
 Parameters::Parameters(int cameraId,
         int cameraFacing) :
@@ -2468,7 +2469,7 @@ status_t Parameters::getDefaultFocalLength(CameraDeviceBase *device) {
 
         // Use focal length in preview template if it exists
         CameraMetadata previewTemplate;
-        status_t res = device->createDefaultRequest(CAMERA3_TEMPLATE_PREVIEW, &previewTemplate);
+        status_t res = device->createDefaultRequest(CAMERA_TEMPLATE_PREVIEW, &previewTemplate);
         if (res != OK) {
             ALOGE("%s: Failed to create default PREVIEW request: %s (%d)",
                     __FUNCTION__, strerror(-res), res);
@@ -2975,7 +2976,7 @@ status_t Parameters::getFilteredSizes(Size limit, Vector<Size> *sizes) {
         const StreamConfiguration &sc = scs[i];
         if (sc.isInput == ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS_OUTPUT &&
                 sc.format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED &&
-                sc.width <= limit.width && sc.height <= limit.height) {
+                ((sc.width * sc.height) <= (limit.width * limit.height))) {
             int64_t minFrameDuration = getMinFrameDurationNs(
                     {sc.width, sc.height}, HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED);
             if (minFrameDuration > MAX_PREVIEW_RECORD_DURATION_NS) {
@@ -3253,6 +3254,8 @@ Parameters::CropRegion Parameters::calculateCropRegion(bool previewOnly) const {
 
 status_t Parameters::calculatePictureFovs(float *horizFov, float *vertFov)
         const {
+    // For external camera, use FOVs = (-1.0, -1.0) as default values. Calculate
+    // FOVs only if there is sufficient information.
     if (fastInfo.isExternalCamera) {
         if (horizFov != NULL) {
             *horizFov = -1.0;
@@ -3260,16 +3263,29 @@ status_t Parameters::calculatePictureFovs(float *horizFov, float *vertFov)
         if (vertFov != NULL) {
             *vertFov = -1.0;
         }
-        return OK;
     }
 
     camera_metadata_ro_entry_t sensorSize =
             staticInfo(ANDROID_SENSOR_INFO_PHYSICAL_SIZE, 2, 2);
-    if (!sensorSize.count) return NO_INIT;
+    if (!sensorSize.count) {
+        // It is non-fatal for external cameras since it has default values.
+        if (fastInfo.isExternalCamera) {
+            return OK;
+        } else {
+            return NO_INIT;
+        }
+    }
 
     camera_metadata_ro_entry_t pixelArraySize =
             staticInfo(ANDROID_SENSOR_INFO_PIXEL_ARRAY_SIZE, 2, 2);
-    if (!pixelArraySize.count) return NO_INIT;
+    if (!pixelArraySize.count) {
+        // It is non-fatal for external cameras since it has default values.
+        if (fastInfo.isExternalCamera) {
+            return OK;
+        } else {
+            return NO_INIT;
+        }
+    }
 
     float arrayAspect = static_cast<float>(fastInfo.arrayWidth) /
             fastInfo.arrayHeight;
