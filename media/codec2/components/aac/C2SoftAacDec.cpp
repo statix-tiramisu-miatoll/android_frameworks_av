@@ -289,13 +289,14 @@ c2_status_t C2SoftAacDec::onStop() {
     mOutputDelayRingBufferFilled = 0;
     mBuffersInfo.clear();
 
-    // To make the codec behave the same before and after a reset, we need to invalidate the
-    // streaminfo struct. This does that:
-    mStreamInfo->sampleRate = 0; // TODO: mStreamInfo is read only
-
+    status_t status = UNKNOWN_ERROR;
+    if (mAACDecoder) {
+        aacDecoder_Close(mAACDecoder);
+        status = initDecoder();
+    }
     mSignalledError = false;
 
-    return C2_OK;
+    return status == OK ? C2_OK : C2_CORRUPTED;
 }
 
 void C2SoftAacDec::onReset() {
@@ -514,8 +515,8 @@ void C2SoftAacDec::drainRingBuffer(
 
                 // TODO: error handling, proper usage, etc.
                 C2MemoryUsage usage = { C2MemoryUsage::CPU_READ, C2MemoryUsage::CPU_WRITE };
-                c2_status_t err = pool->fetchLinearBlock(
-                        numSamples * sizeof(int16_t), usage, &block);
+                size_t bufferSize = numSamples * sizeof(int16_t);
+                c2_status_t err = pool->fetchLinearBlock(bufferSize, usage, &block);
                 if (err != C2_OK) {
                     ALOGD("failed to fetch a linear block (%d)", err);
                     return std::bind(fillEmptyWork, _1, C2_NO_MEMORY);
@@ -529,7 +530,7 @@ void C2SoftAacDec::drainRingBuffer(
                     mSignalledError = true;
                     return std::bind(fillEmptyWork, _1, C2_CORRUPTED);
                 }
-                return [buffer = createLinearBuffer(block)](
+                return [buffer = createLinearBuffer(block, 0, bufferSize)](
                         const std::unique_ptr<C2Work> &work) {
                     work->result = C2_OK;
                     C2FrameData &output = work->worklets.front()->output;
@@ -882,10 +883,14 @@ void C2SoftAacDec::process(
             work->worklets.front()->output.configUpdate.push_back(
                     C2Param::Copy(currentBoostFactor));
 
-            C2StreamDrcCompressionModeTuning::input currentCompressMode(0u,
-                    (C2Config::drc_compression_mode_t) compressMode);
-            work->worklets.front()->output.configUpdate.push_back(
-                    C2Param::Copy(currentCompressMode));
+            if (android_get_device_api_level() < __ANDROID_API_S__) {
+                // We used to report DRC compression mode in the output format
+                // in Q and R, but stopped doing that in S
+                C2StreamDrcCompressionModeTuning::input currentCompressMode(0u,
+                        (C2Config::drc_compression_mode_t) compressMode);
+                work->worklets.front()->output.configUpdate.push_back(
+                        C2Param::Copy(currentCompressMode));
+            }
 
             C2StreamDrcEncodedTargetLevelTuning::input currentEncodedTargetLevel(0u,
                     (C2FloatValue) (encTargetLevel*-0.25));
@@ -1089,11 +1094,13 @@ private:
 
 }  // namespace android
 
+__attribute__((cfi_canonical_jump_table))
 extern "C" ::C2ComponentFactory* CreateCodec2Factory() {
     ALOGV("in %s", __func__);
     return new ::android::C2SoftAacDecFactory();
 }
 
+__attribute__((cfi_canonical_jump_table))
 extern "C" void DestroyCodec2Factory(::C2ComponentFactory* factory) {
     ALOGV("in %s", __func__);
     delete factory;
