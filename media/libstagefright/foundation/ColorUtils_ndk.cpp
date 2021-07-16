@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 The Android Open Source Project
+ * Copyright (C) 2016 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,19 +14,26 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_MEDIA_TRANSCODING_DEFS_H
-#define ANDROID_MEDIA_TRANSCODING_DEFS_H
+//#define LOG_NDEBUG 0
+#define LOG_TAG "ColorUtils"
 
-#include <aidl/android/media/ITranscodingClientCallback.h>
-#include <aidl/android/media/TranscodingRequestParcel.h>
-
-// Transcoding uses some APIs available on API31+.
-#define __TRANSCODING_MIN_API__ 31
+#include <inttypes.h>
+#include <media/stagefright/foundation/ColorUtils.h>
+#include <media/NdkMediaFormat.h>
+#include <utils/Log.h>
 
 namespace android {
 
-using ClientIdType = uintptr_t;
-using SessionIdType = int32_t;
+// static
+void ColorUtils::setHDRStaticInfoIntoAMediaFormat(
+        const HDRStaticInfo &info, AMediaFormat *format) {
+    uint8_t *data = (uint8_t *) malloc(25);
+    if (data != NULL) {
+        fillHdrStaticInfoBuffer(info, data);
+        AMediaFormat_setBuffer(format, "hdr-static-info", data, 25);
+        free(data);
+    }
+}
 
 }  // namespace android
-#endif  // ANDROID_MEDIA_TRANSCODING_DEFS_H
+
