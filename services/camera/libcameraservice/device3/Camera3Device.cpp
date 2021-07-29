@@ -171,6 +171,13 @@ status_t Camera3Device::initialize(sp<CameraProviderManager> manager, const Stri
             mZoomRatioMappers[physicalId] = ZoomRatioMapper(
                     &mPhysicalDeviceInfoMap[physicalId],
                     mSupportNativeZoomRatio, usePrecorrectArray);
+
+            if (SessionConfigurationUtils::isUltraHighResolutionSensor(
+                    mPhysicalDeviceInfoMap[physicalId])) {
+                mUHRCropAndMeteringRegionMappers[physicalId] =
+                        UHRCropAndMeteringRegionMapper(mPhysicalDeviceInfoMap[physicalId],
+                                usePrecorrectArray);
+            }
         }
     }
 
@@ -347,6 +354,11 @@ status_t Camera3Device::initializeCommonLocked() {
 
     mZoomRatioMappers[mId.c_str()] = ZoomRatioMapper(&mDeviceInfo,
             mSupportNativeZoomRatio, usePrecorrectArray);
+
+    if (SessionConfigurationUtils::isUltraHighResolutionSensor(mDeviceInfo)) {
+        mUHRCropAndMeteringRegionMappers[mId.c_str()] =
+                UHRCropAndMeteringRegionMapper(mDeviceInfo, usePrecorrectArray);
+    }
 
     if (RotateAndCropMapper::isNeeded(&mDeviceInfo)) {
         mRotateAndCropMappers.emplace(mId.c_str(), &mDeviceInfo);
@@ -2450,9 +2462,9 @@ sp<Camera3Device::CaptureRequest> Camera3Device::createCaptureRequest(
 
         auto testPatternDataEntry =
                 newRequest->mSettingsList.begin()->metadata.find(ANDROID_SENSOR_TEST_PATTERN_DATA);
-        if (testPatternDataEntry.count > 0) {
-            memcpy(newRequest->mOriginalTestPatternData, testPatternModeEntry.data.i32,
-                    sizeof(newRequest->mOriginalTestPatternData));
+        if (testPatternDataEntry.count >= 4) {
+            memcpy(newRequest->mOriginalTestPatternData, testPatternDataEntry.data.i32,
+                    sizeof(CaptureRequest::mOriginalTestPatternData));
         } else {
             newRequest->mOriginalTestPatternData[0] = 0;
             newRequest->mOriginalTestPatternData[1] = 0;
@@ -4815,10 +4827,31 @@ status_t Camera3Device::RequestThread::prepareHalRequests() {
             }
 
             {
-                // Correct metadata regions for distortion correction if enabled
                 sp<Camera3Device> parent = mParent.promote();
                 if (parent != nullptr) {
                     List<PhysicalCameraSettings>::iterator it;
+                    for (it = captureRequest->mSettingsList.begin();
+                            it != captureRequest->mSettingsList.end(); it++) {
+                        if (parent->mUHRCropAndMeteringRegionMappers.find(it->cameraId) ==
+                                parent->mUHRCropAndMeteringRegionMappers.end()) {
+                            continue;
+                        }
+
+                        if (!captureRequest->mUHRCropAndMeteringRegionsUpdated) {
+                            res = parent->mUHRCropAndMeteringRegionMappers[it->cameraId].
+                                    updateCaptureRequest(&(it->metadata));
+                            if (res != OK) {
+                                SET_ERR("RequestThread: Unable to correct capture requests "
+                                        "for scaler crop region and metering regions for request "
+                                        "%d: %s (%d)", halRequest->frame_number, strerror(-res),
+                                        res);
+                                return INVALID_OPERATION;
+                            }
+                            captureRequest->mUHRCropAndMeteringRegionsUpdated = true;
+                        }
+                    }
+
+                    // Correct metadata regions for distortion correction if enabled
                     for (it = captureRequest->mSettingsList.begin();
                             it != captureRequest->mSettingsList.end(); it++) {
                         if (parent->mDistortionMappers.find(it->cameraId) ==
@@ -5829,6 +5862,13 @@ bool Camera3Device::RequestThread::overrideTestPattern(
         const sp<CaptureRequest> &request) {
     ATRACE_CALL();
 
+    {
+        sp<Camera3Device> parent = mParent.promote();
+        if (parent != nullptr) {
+            if (!parent->supportsCameraMute()) return false;
+        }
+    }
+
     Mutex::Autolock l(mTriggerMutex);
 
     bool changed = false;
@@ -5864,16 +5904,16 @@ bool Camera3Device::RequestThread::overrideTestPattern(
     }
 
     auto testPatternColor = metadata.find(ANDROID_SENSOR_TEST_PATTERN_DATA);
-    if (testPatternColor.count > 0) {
+    if (testPatternColor.count >= 4) {
         for (size_t i = 0; i < 4; i++) {
-            if (testPatternColor.data.i32[i] != (int32_t)testPatternData[i]) {
+            if (testPatternColor.data.i32[i] != testPatternData[i]) {
                 testPatternColor.data.i32[i] = testPatternData[i];
                 changed = true;
             }
         }
     } else {
         metadata.update(ANDROID_SENSOR_TEST_PATTERN_DATA,
-                (int32_t*)testPatternData, 4);
+                testPatternData, 4);
         changed = true;
     }
 
