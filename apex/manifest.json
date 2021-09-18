@@ -1,6 +1,6 @@
 {
   "name": "com.android.media",
-  "version": 311111000,
+  "version": 311112000,
   "requireNativeLibs": [
     "libandroid.so",
     "libbinder_ndk.so",
