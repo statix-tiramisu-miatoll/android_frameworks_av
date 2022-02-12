@@ -1,6 +1,6 @@
 {
   "name": "com.android.media.swcodec",
-  "version": 311610000,
+  "version": 311611000,
   "requireNativeLibs": [
     ":sphal"
   ]
