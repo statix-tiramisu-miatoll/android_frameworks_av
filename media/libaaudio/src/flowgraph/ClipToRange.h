@@ -21,7 +21,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 
-#include "FlowGraphNode.h"
+#include "AudioProcessorBase.h"
 
 namespace flowgraph {
 
@@ -30,13 +30,13 @@ namespace flowgraph {
 constexpr float kDefaultMaxHeadroom = 1.41253754f;
 constexpr float kDefaultMinHeadroom = -kDefaultMaxHeadroom;
 
-class ClipToRange : public FlowGraphFilter {
+class ClipToRange : public AudioProcessorBase {
 public:
     explicit ClipToRange(int32_t channelCount);
 
     virtual ~ClipToRange() = default;
 
-    int32_t onProcess(int32_t numFrames) override;
+    int32_t onProcess(int64_t framePosition, int32_t numFrames) override;
 
     void setMinimum(float min) {
         mMinimum = min;
@@ -54,9 +54,8 @@ public:
         return mMaximum;
     }
 
-    const char *getName() override {
-        return "ClipToRange";
-    }
+    AudioFloatInputPort input;
+    AudioFloatOutputPort output;
 
 private:
     float mMinimum = kDefaultMinHeadroom;
