@@ -1,7 +1,0 @@
-{
-  "presubmit": [
-    {
-       "name": "audio_aidl_conversion_tests"
-    }
-  ]
-}

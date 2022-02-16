@@ -29,6 +29,8 @@
 #include "ACaptureRequest.h"
 #include "utils.h"
 
+#include "ACameraCaptureSession.inc"
+
 #define CHECK_TRANSACTION_AND_RET(remoteRet, status, callName) \
     if (!remoteRet.isOk()) { \
         ALOGE("%s: Transaction error during %s call %s", __FUNCTION__, callName, \
@@ -908,7 +910,6 @@ void CameraDevice::CallbackHandler::onMessageReceived(
         case kWhatOnError:
         case kWhatSessionStateCb:
         case kWhatCaptureStart:
-        case kWhatCaptureStart2:
         case kWhatCaptureResult:
         case kWhatLogicalCaptureResult:
         case kWhatCaptureFail:
@@ -981,7 +982,6 @@ void CameraDevice::CallbackHandler::onMessageReceived(
         }
         case kWhatSessionStateCb:
         case kWhatCaptureStart:
-        case kWhatCaptureStart2:
         case kWhatCaptureResult:
         case kWhatLogicalCaptureResult:
         case kWhatCaptureFail:
@@ -1002,7 +1002,6 @@ void CameraDevice::CallbackHandler::onMessageReceived(
             const char *id_cstr = mId.c_str();
             switch (msg->what()) {
                 case kWhatCaptureStart:
-                case kWhatCaptureStart2:
                 case kWhatCaptureResult:
                 case kWhatLogicalCaptureResult:
                 case kWhatCaptureFail:
@@ -1051,35 +1050,6 @@ void CameraDevice::CallbackHandler::onMessageReceived(
                     }
                     ACaptureRequest* request = allocateACaptureRequest(requestSp, id_cstr);
                     (*onStart)(context, session.get(), request, timestamp);
-                    freeACaptureRequest(request);
-                    break;
-                }
-                case kWhatCaptureStart2:
-                {
-                    ACameraCaptureSession_captureCallback_startV2 onStart2;
-                    found = msg->findPointer(kCallbackFpKey, (void**) &onStart2);
-                    if (!found) {
-                        ALOGE("%s: Cannot find capture startV2 callback!", __FUNCTION__);
-                        return;
-                    }
-                    if (onStart2 == nullptr) {
-                        return;
-                    }
-                    int64_t timestamp;
-                    found = msg->findInt64(kTimeStampKey, &timestamp);
-                    if (!found) {
-                        ALOGE("%s: Cannot find timestamp!", __FUNCTION__);
-                        return;
-                    }
-                    int64_t frameNumber;
-                    found = msg->findInt64(kFrameNumberKey, &frameNumber);
-                    if (!found) {
-                        ALOGE("%s: Cannot find frame number!", __FUNCTION__);
-                        return;
-                    }
-
-                    ACaptureRequest* request = allocateACaptureRequest(requestSp, id_cstr);
-                    (*onStart2)(context, session.get(), request, timestamp, frameNumber);
                     freeACaptureRequest(request);
                     break;
                 }
@@ -1311,7 +1281,6 @@ CameraDevice::CallbackHolder::CallbackHolder(
         ACameraCaptureSession_captureCallbacks* cbs) :
         mSession(session), mRequests(requests),
         mIsRepeating(isRepeating),
-        mIs2Callback(false),
         mIsLogicalCameraCallback(false) {
     initCaptureCallbacks(cbs);
 
@@ -1328,43 +1297,8 @@ CameraDevice::CallbackHolder::CallbackHolder(
         ACameraCaptureSession_logicalCamera_captureCallbacks* lcbs) :
         mSession(session), mRequests(requests),
         mIsRepeating(isRepeating),
-        mIs2Callback(false),
         mIsLogicalCameraCallback(true) {
     initCaptureCallbacks(lcbs);
-
-    if (lcbs != nullptr) {
-        mOnLogicalCameraCaptureCompleted = lcbs->onLogicalCameraCaptureCompleted;
-        mOnLogicalCameraCaptureFailed = lcbs->onLogicalCameraCaptureFailed;
-    }
-}
-
-CameraDevice::CallbackHolder::CallbackHolder(
-        sp<ACameraCaptureSession>          session,
-        const Vector<sp<CaptureRequest> >& requests,
-        bool                               isRepeating,
-        ACameraCaptureSession_captureCallbacksV2* cbs) :
-        mSession(session), mRequests(requests),
-        mIsRepeating(isRepeating),
-        mIs2Callback(true),
-        mIsLogicalCameraCallback(false) {
-    initCaptureCallbacksV2(cbs);
-
-    if (cbs != nullptr) {
-        mOnCaptureCompleted = cbs->onCaptureCompleted;
-        mOnCaptureFailed = cbs->onCaptureFailed;
-    }
-}
-
-CameraDevice::CallbackHolder::CallbackHolder(
-        sp<ACameraCaptureSession>          session,
-        const Vector<sp<CaptureRequest> >& requests,
-        bool                               isRepeating,
-        ACameraCaptureSession_logicalCamera_captureCallbacksV2* lcbs) :
-        mSession(session), mRequests(requests),
-        mIsRepeating(isRepeating),
-        mIs2Callback(true),
-        mIsLogicalCameraCallback(true) {
-    initCaptureCallbacksV2(lcbs);
 
     if (lcbs != nullptr) {
         mOnLogicalCameraCaptureCompleted = lcbs->onLogicalCameraCaptureCompleted;
@@ -1608,14 +1542,11 @@ CameraDevice::ServiceCallback::onCaptureStarted(
 
     int32_t sequenceId = resultExtras.requestId;
     int32_t burstId = resultExtras.burstId;
-    int64_t frameNumber = resultExtras.frameNumber;
 
     auto it = dev->mSequenceCallbackMap.find(sequenceId);
     if (it != dev->mSequenceCallbackMap.end()) {
         CallbackHolder cbh = (*it).second;
         ACameraCaptureSession_captureCallback_start onStart = cbh.mOnCaptureStarted;
-        ACameraCaptureSession_captureCallback_startV2 onStart2 = cbh.mOnCaptureStarted2;
-        bool v2Callback = cbh.mIs2Callback;
         sp<ACameraCaptureSession> session = cbh.mSession;
         if ((size_t) burstId >= cbh.mRequests.size()) {
             ALOGE("%s: Error: request index %d out of bound (size %zu)",
@@ -1623,19 +1554,12 @@ CameraDevice::ServiceCallback::onCaptureStarted(
             dev->setCameraDeviceErrorLocked(ACAMERA_ERROR_CAMERA_SERVICE);
         }
         sp<CaptureRequest> request = cbh.mRequests[burstId];
-        sp<AMessage> msg = nullptr;
-        if (v2Callback) {
-            msg = new AMessage(kWhatCaptureStart2, dev->mHandler);
-            msg->setPointer(kCallbackFpKey, (void*) onStart2);
-        } else {
-            msg = new AMessage(kWhatCaptureStart, dev->mHandler);
-            msg->setPointer(kCallbackFpKey, (void*) onStart);
-        }
+        sp<AMessage> msg = new AMessage(kWhatCaptureStart, dev->mHandler);
         msg->setPointer(kContextKey, cbh.mContext);
         msg->setObject(kSessionSpKey, session);
+        msg->setPointer(kCallbackFpKey, (void*) onStart);
         msg->setObject(kCaptureRequestKey, request);
         msg->setInt64(kTimeStampKey, timestamp);
-        msg->setInt64(kFrameNumberKey, frameNumber);
         dev->postSessionMsgAndCleanup(msg);
     }
     return ret;
