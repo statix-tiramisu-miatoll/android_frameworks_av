@@ -16,21 +16,19 @@
 
 #pragma once
 
-#include <sys/types.h>
-#include <unistd.h>
-
-#include <map>
 #include <vector>
+#include <map>
+#include <unistd.h>
+#include <sys/types.h>
 
-#include <android-base/stringprintf.h>
+#include <system/audio.h>
 #include <audiomanager/AudioManager.h>
 #include <media/AudioProductStrategy.h>
-#include <policy.h>
-#include <system/audio.h>
 #include <utils/Errors.h>
 #include <utils/KeyedVector.h>
 #include <utils/RefBase.h>
 #include <utils/String8.h>
+#include <policy.h>
 #include <Volume.h>
 #include "AudioPatch.h"
 #include "EffectDescriptor.h"
@@ -54,7 +52,7 @@ public:
         mPreferredDeviceForExclusiveUse(isPreferredDeviceForExclusiveUse){}
     ~ClientDescriptor() override = default;
 
-    virtual void dump(String8 *dst, int spaces) const;
+    virtual void dump(String8 *dst, int spaces, int index) const;
     virtual std::string toShortString() const;
 
     audio_port_handle_t portId() const { return mPortId; }
@@ -102,7 +100,7 @@ public:
     ~TrackClientDescriptor() override = default;
 
     using ClientDescriptor::dump;
-    void dump(String8 *dst, int spaces) const override;
+    void dump(String8 *dst, int spaces, int index) const override;
     std::string toShortString() const override;
 
     audio_output_flags_t flags() const { return mFlags; }
@@ -170,7 +168,7 @@ public:
     ~RecordClientDescriptor() override = default;
 
     using ClientDescriptor::dump;
-    void dump(String8 *dst, int spaces) const override;
+    void dump(String8 *dst, int spaces, int index) const override;
 
     audio_unique_id_t riid() const { return mRIId; }
     audio_source_t source() const { return mSource; }
@@ -221,7 +219,7 @@ public:
     void setHwOutput(const sp<HwAudioOutputDescriptor>& hwOutput);
 
     using ClientDescriptor::dump;
-    void dump(String8 *dst, int spaces) const override;
+    void dump(String8 *dst, int spaces, int index) const override;
 
  private:
     audio_patch_handle_t mPatchHandle = AUDIO_PATCH_HANDLE_NONE;
@@ -271,13 +269,10 @@ public:
     size_t getClientCount() const {
         return mClients.size();
     }
-    virtual void dump(String8 *dst, int spaces, const char* extraInfo = nullptr) const {
-        (void)extraInfo;
+    virtual void dump(String8 *dst) const {
         size_t index = 0;
         for (const auto& client: getClientIterable()) {
-            const std::string prefix = base::StringPrintf("%*s %zu. ", spaces, "", ++index);
-            dst->appendFormat("%s", prefix.c_str());
-            client->dump(dst, prefix.size());
+            client->dump(dst, 2, index++);
         }
     }
 

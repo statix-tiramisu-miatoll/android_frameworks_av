@@ -39,8 +39,8 @@ cc_test {
         "libstagefright_foundation",
     ],
 
-    header_libs: [
-        "libstagefright_headers",
+    include_dirs: [
+        "frameworks/av/media/libstagefright",
     ],
 
     shared_libs: [
