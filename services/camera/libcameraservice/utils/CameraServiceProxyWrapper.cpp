@@ -120,12 +120,13 @@ void CameraServiceProxyWrapper::pingCameraServiceProxy() {
     proxyBinder->pingForUserUpdate();
 }
 
-int CameraServiceProxyWrapper::getRotateAndCropOverride(String16 packageName, int lensFacing,
-        int userId) {
+bool CameraServiceProxyWrapper::isRotateAndCropOverrideNeeded(
+        String16 packageName, int sensorOrientation, int lensFacing) {
     sp<ICameraServiceProxy> proxyBinder = getCameraServiceProxy();
     if (proxyBinder == nullptr) return true;
-    int ret = 0;
-    auto status = proxyBinder->getRotateAndCropOverride(packageName, lensFacing, userId, &ret);
+    bool ret = true;
+    auto status = proxyBinder->isRotateAndCropOverrideNeeded(packageName, sensorOrientation,
+            lensFacing, &ret);
     if (!status.isOk()) {
         ALOGE("%s: Failed during top activity orientation query: %s", __FUNCTION__,
                 status.exceptionMessage().c_str());
