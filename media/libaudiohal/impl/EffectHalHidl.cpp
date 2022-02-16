@@ -36,6 +36,7 @@ using ::android::hardware::Return;
 
 namespace android {
 namespace effect {
+namespace CPP_VERSION {
 
 using namespace ::android::hardware::audio::common::CPP_VERSION;
 using namespace ::android::hardware::audio::effect::CPP_VERSION;
@@ -309,5 +310,6 @@ status_t EffectHalHidl::setConfigImpl(
     return result;
 }
 
+} // namespace CPP_VERSION
 } // namespace effect
 } // namespace android

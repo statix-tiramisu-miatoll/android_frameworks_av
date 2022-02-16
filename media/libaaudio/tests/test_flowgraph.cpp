@@ -23,7 +23,6 @@
 #include <gtest/gtest.h>
 
 #include "flowgraph/ClipToRange.h"
-#include "flowgraph/MonoBlend.h"
 #include "flowgraph/MonoToMultiConverter.h"
 #include "flowgraph/SourceFloat.h"
 #include "flowgraph/RampLinear.h"
@@ -77,40 +76,31 @@ TEST(test_flowgraph, module_mono_to_stereo) {
 }
 
 TEST(test_flowgraph, module_ramp_linear) {
-    constexpr int singleNumOutput = 1;
     constexpr int rampSize = 5;
     constexpr int numOutput = 100;
     constexpr float value = 1.0f;
-    constexpr float initialTarget = 10.0f;
-    constexpr float finalTarget = 100.0f;
-    constexpr float tolerance = 0.0001f; // arbitrary
+    constexpr float target = 100.0f;
     float output[numOutput] = {};
     RampLinear rampLinear{1};
     SinkFloat sinkFloat{1};
 
     rampLinear.input.setValue(value);
     rampLinear.setLengthInFrames(rampSize);
+    rampLinear.setTarget(target);
+    rampLinear.forceCurrent(0.0f);
+
     rampLinear.output.connect(&sinkFloat.input);
 
-    // Check that the values go to the initial target instantly.
-    rampLinear.setTarget(initialTarget);
-    int32_t singleNumRead = sinkFloat.read(output, singleNumOutput);
-    ASSERT_EQ(singleNumRead, singleNumOutput);
-    EXPECT_NEAR(value * initialTarget, output[0], tolerance);
-
-    // Now set target and check that the linear ramp works as expected.
-    rampLinear.setTarget(finalTarget);
     int32_t numRead = sinkFloat.read(output, numOutput);
-    const float incrementSize = (finalTarget - initialTarget) / rampSize;
     ASSERT_EQ(numOutput, numRead);
-
+    constexpr float tolerance = 0.0001f; // arbitrary
     int i = 0;
     for (; i < rampSize; i++) {
-        float expected = value * (initialTarget + i * incrementSize);
+        float expected = i * value * target / rampSize;
         EXPECT_NEAR(expected, output[i], tolerance);
     }
     for (; i < numOutput; i++) {
-        float expected = value * finalTarget;
+        float expected = value * target;
         EXPECT_NEAR(expected, output[i], tolerance);
     }
 }
@@ -165,29 +155,3 @@ TEST(test_flowgraph, module_clip_to_range) {
         EXPECT_NEAR(expected[i], output[i], tolerance);
     }
 }
-
-TEST(test_flowgraph, module_mono_blend) {
-    // Two channel to two channel with 3 inputs and outputs.
-    constexpr int numChannels = 2;
-    constexpr int numFrames = 3;
-
-    static const float input[] = {-0.7, 0.5, -0.25, 1.25, 1000, 2000};
-    static const float expected[] = {-0.1, -0.1, 0.5, 0.5, 1500, 1500};
-    float output[100];
-    SourceFloat sourceFloat{numChannels};
-    MonoBlend monoBlend{numChannels};
-    SinkFloat sinkFloat{numChannels};
-
-    sourceFloat.setData(input, numFrames);
-
-    sourceFloat.output.connect(&monoBlend.input);
-    monoBlend.output.connect(&sinkFloat.input);
-
-    int32_t numRead = sinkFloat.read(output, numFrames);
-    ASSERT_EQ(numRead, numFrames);
-    constexpr float tolerance = 0.000001f; // arbitrary
-    for (int i = 0; i < numRead; i++) {
-        EXPECT_NEAR(expected[i], output[i], tolerance);
-    }
-}
-
