@@ -50,8 +50,7 @@
                 </devicePort>
                 <devicePort tagName="Built-In Mic" type="AUDIO_DEVICE_IN_BUILTIN_MIC" role="source">
                 </devicePort>
-                <devicePort tagName="Hdmi" type="AUDIO_DEVICE_OUT_HDMI" role="sink"
-                            encodedFormats="AUDIO_FORMAT_AC3">
+                <devicePort tagName="Hdmi" type="AUDIO_DEVICE_OUT_HDMI" role="sink">
                 </devicePort>
                 <devicePort tagName="Hdmi-In Mic" type="AUDIO_DEVICE_IN_HDMI" role="source">
                 </devicePort>
