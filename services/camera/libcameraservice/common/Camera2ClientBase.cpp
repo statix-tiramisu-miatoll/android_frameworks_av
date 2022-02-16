@@ -34,8 +34,6 @@
 #include "api2/CameraDeviceClient.h"
 
 #include "device3/Camera3Device.h"
-#include "device3/aidl/AidlCamera3Device.h"
-#include "device3/hidl/HidlCamera3Device.h"
 #include "utils/CameraThreadState.h"
 #include "utils/CameraServiceProxyWrapper.h"
 
@@ -49,7 +47,6 @@ Camera2ClientBase<TClientBase>::Camera2ClientBase(
         const sp<CameraService>& cameraService,
         const sp<TCamCallbacks>& remoteCallback,
         const String16& clientPackageName,
-        bool systemNativeClient,
         const std::optional<String16>& clientFeatureId,
         const String8& cameraId,
         int api1CameraId,
@@ -58,21 +55,20 @@ Camera2ClientBase<TClientBase>::Camera2ClientBase(
         int clientPid,
         uid_t clientUid,
         int servicePid,
-        bool overrideForPerfClass,
-        bool legacyClient):
-        TClientBase(cameraService, remoteCallback, clientPackageName, systemNativeClient,
-                clientFeatureId, cameraId, api1CameraId, cameraFacing, sensorOrientation, clientPid,
-                clientUid, servicePid),
+        bool overrideForPerfClass):
+        TClientBase(cameraService, remoteCallback, clientPackageName, clientFeatureId,
+                cameraId, api1CameraId, cameraFacing, sensorOrientation, clientPid, clientUid,
+                servicePid),
         mSharedCameraCallbacks(remoteCallback),
         mDeviceVersion(cameraService->getDeviceVersion(TClientBase::mCameraIdStr)),
+        mDevice(new Camera3Device(cameraId, overrideForPerfClass)),
         mDeviceActive(false), mApi1CameraId(api1CameraId)
 {
     ALOGI("Camera %s: Opened. Client: %s (PID %d, UID %d)", cameraId.string(),
             String8(clientPackageName).string(), clientPid, clientUid);
 
     mInitialClientPid = clientPid;
-    mOverrideForPerfClass = overrideForPerfClass;
-    mLegacyClient = legacyClient;
+    LOG_ALWAYS_FATAL_IF(mDevice == 0, "Device should never be NULL here.");
 }
 
 template <typename TClientBase>
@@ -107,28 +103,7 @@ status_t Camera2ClientBase<TClientBase>::initializeImpl(TProviderPtr providerPtr
     if (res != OK) {
         return res;
     }
-    IPCTransport providerTransport = IPCTransport::INVALID;
-    res = providerPtr->getCameraIdIPCTransport(TClientBase::mCameraIdStr.string(),
-            &providerTransport);
-    if (res != OK) {
-        return res;
-    }
-    switch (providerTransport) {
-        case IPCTransport::HIDL:
-            mDevice =
-                    new HidlCamera3Device(TClientBase::mCameraIdStr, mOverrideForPerfClass,
-                            mLegacyClient);
-            break;
-        case IPCTransport::AIDL:
-            mDevice =
-                    new AidlCamera3Device(TClientBase::mCameraIdStr, mOverrideForPerfClass,
-                            mLegacyClient);
-             break;
-        default:
-            ALOGE("%s Invalid transport for camera id %s", __FUNCTION__,
-                    TClientBase::mCameraIdStr.string());
-            return NO_INIT;
-    }
+
     if (mDevice == NULL) {
         ALOGE("%s: Camera %s: No device connected",
                 __FUNCTION__, TClientBase::mCameraIdStr.string());
@@ -177,38 +152,6 @@ status_t Camera2ClientBase<TClientBase>::dumpClient(int fd,
     // TODO: print dynamic/request section from most recent requests
 
     return dumpDevice(fd, args);
-}
-
-template <typename TClientBase>
-status_t Camera2ClientBase<TClientBase>::startWatchingTags(const String8 &tags, int out) {
-  sp<CameraDeviceBase> device = mDevice;
-  if (!device) {
-    dprintf(out, "  Device is detached");
-    return OK;
-  }
-
-  return device->startWatchingTags(tags);
-}
-
-template <typename TClientBase>
-status_t Camera2ClientBase<TClientBase>::stopWatchingTags(int out) {
-  sp<CameraDeviceBase> device = mDevice;
-  if (!device) {
-    dprintf(out, "  Device is detached");
-    return OK;
-  }
-
-  return device->stopWatchingTags();
-}
-
-template <typename TClientBase>
-status_t Camera2ClientBase<TClientBase>::dumpWatchedEventsToVector(std::vector<std::string> &out) {
-    sp<CameraDeviceBase> device = mDevice;
-    if (!device) {
-        // Nothing to dump if the device is detached
-        return OK;
-    }
-    return device->dumpWatchedEventsToVector(out);
 }
 
 template <typename TClientBase>
@@ -468,17 +411,6 @@ template <typename TClientBase>
 void Camera2ClientBase<TClientBase>::SharedCameraCallbacks::clear() {
     Mutex::Autolock l(mRemoteCallbackLock);
     mRemoteCallback.clear();
-}
-
-template <typename TClientBase>
-status_t Camera2ClientBase<TClientBase>::injectCamera(const String8& injectedCamId,
-        sp<CameraProviderManager> manager) {
-    return mDevice->injectCamera(injectedCamId, manager);
-}
-
-template <typename TClientBase>
-status_t Camera2ClientBase<TClientBase>::stopInjection() {
-    return mDevice->stopInjection();
 }
 
 template class Camera2ClientBase<CameraService::Client>;
