@@ -17,8 +17,6 @@
 #define LOG_TAG "APM::AudioInputDescriptor"
 //#define LOG_NDEBUG 0
 
-#include <android-base/stringprintf.h>
-
 #include <audiomanager/AudioManager.h>
 #include <media/AudioPolicy.h>
 #include <policy.h>
@@ -64,6 +62,7 @@ status_t AudioInputDescriptor::applyAudioPortConfig(const struct audio_port_conf
     toAudioPortConfig(&localBackupConfig);
     if ((status = validationBeforeApplyConfig(config)) == NO_ERROR) {
         AudioPortConfig::applyAudioPortConfig(config, backupConfig);
+        applyPolicyAudioPortConfig(config);
     }
 
     if (backupConfig != NULL) {
@@ -84,6 +83,7 @@ void AudioInputDescriptor::toAudioPortConfig(struct audio_port_config *dstConfig
     }
 
     AudioPortConfig::toAudioPortConfig(dstConfig, srcConfig);
+    toPolicyAudioPortConfig(dstConfig, srcConfig);
 
     dstConfig->role = AUDIO_PORT_ROLE_SINK;
     dstConfig->type = AUDIO_PORT_TYPE_MIX;
@@ -510,20 +510,17 @@ void AudioInputDescriptor::checkSuspendEffects()
     }
 }
 
-void AudioInputDescriptor::dump(String8 *dst, int spaces, const char* extraInfo) const
+void AudioInputDescriptor::dump(String8 *dst) const
 {
-    dst->appendFormat("Port ID: %d%s%s\n",
-            getId(), extraInfo != nullptr ? "; " : "", extraInfo != nullptr ? extraInfo : "");
-    dst->appendFormat("%*s%s; %d; Channel mask: 0x%x\n", spaces, "",
-            audio_format_to_string(mFormat), mSamplingRate, mChannelMask);
-    dst->appendFormat("%*sDevices: %s\n", spaces, "",
-            mDevice->toString(true /*includeSensitiveInfo*/).c_str());
-    mEnabledEffects.dump(dst, spaces /*spaces*/, false /*verbose*/);
-    if (getClientCount() != 0) {
-        dst->appendFormat("%*sAudioRecord Clients (%zu):\n", spaces, "", getClientCount());
-        ClientMapHandler<RecordClientDescriptor>::dump(dst, spaces);
-        dst->append("\n");
-    }
+    dst->appendFormat(" ID: %d\n", getId());
+    dst->appendFormat(" Sampling rate: %d\n", mSamplingRate);
+    dst->appendFormat(" Format: %d\n", mFormat);
+    dst->appendFormat(" Channels: %08x\n", mChannelMask);
+    dst->appendFormat(" Devices %s\n", mDevice->toString(true /*includeSensitiveInfo*/).c_str());
+    mEnabledEffects.dump(dst, 1 /*spaces*/, false /*verbose*/);
+    dst->append(" AudioRecord Clients:\n");
+    ClientMapHandler<RecordClientDescriptor>::dump(dst);
+    dst->append("\n");
 }
 
 bool AudioInputCollection::isSourceActive(audio_source_t source) const
@@ -611,12 +608,10 @@ void AudioInputCollection::clearSessionRoutesForDevice(
 
 void AudioInputCollection::dump(String8 *dst) const
 {
-    dst->appendFormat("\n Inputs (%zu):\n", size());
+    dst->append("\nInputs dump:\n");
     for (size_t i = 0; i < size(); i++) {
-        const std::string prefix = base::StringPrintf("  %zu. ", i + 1);
-        const std::string extraInfo = base::StringPrintf("I/O handle: %d", keyAt(i));
-        dst->appendFormat("%s", prefix.c_str());
-        valueAt(i)->dump(dst, prefix.size(), extraInfo.c_str());
+        dst->appendFormat("- Input %d dump:\n", keyAt(i));
+        valueAt(i)->dump(dst);
     }
 }
 

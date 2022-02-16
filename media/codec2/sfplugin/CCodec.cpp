@@ -1018,31 +1018,29 @@ void CCodec::configure(const sp<AMessage> &msg) {
             } else {
                 pixelFormatInfo = nullptr;
             }
-            // bit depth -> format
-            std::map<uint32_t, uint32_t> flexPixelFormat;
-            std::map<uint32_t, uint32_t> flexPlanarPixelFormat;
-            std::map<uint32_t, uint32_t> flexSemiPlanarPixelFormat;
+            std::optional<uint32_t> flexPixelFormat{};
+            std::optional<uint32_t> flexPlanarPixelFormat{};
+            std::optional<uint32_t> flexSemiPlanarPixelFormat{};
             if (pixelFormatInfo && *pixelFormatInfo) {
                 for (size_t i = 0; i < pixelFormatInfo->flexCount(); ++i) {
                     const C2FlexiblePixelFormatDescriptorStruct &desc =
                         pixelFormatInfo->m.values[i];
-                    if (desc.subsampling != C2Color::YUV_420
+                    if (desc.bitDepth != 8
+                            || desc.subsampling != C2Color::YUV_420
                             // TODO(b/180076105): some device report wrong layout
                             // || desc.layout == C2Color::INTERLEAVED_PACKED
                             // || desc.layout == C2Color::INTERLEAVED_ALIGNED
                             || desc.layout == C2Color::UNKNOWN_LAYOUT) {
                         continue;
                     }
-                    if (flexPixelFormat.count(desc.bitDepth) == 0) {
-                        flexPixelFormat.emplace(desc.bitDepth, desc.pixelFormat);
+                    if (!flexPixelFormat) {
+                        flexPixelFormat = desc.pixelFormat;
                     }
-                    if (desc.layout == C2Color::PLANAR_PACKED
-                            && flexPlanarPixelFormat.count(desc.bitDepth) == 0) {
-                        flexPlanarPixelFormat.emplace(desc.bitDepth, desc.pixelFormat);
+                    if (desc.layout == C2Color::PLANAR_PACKED && !flexPlanarPixelFormat) {
+                        flexPlanarPixelFormat = desc.pixelFormat;
                     }
-                    if (desc.layout == C2Color::SEMIPLANAR_PACKED
-                            && flexSemiPlanarPixelFormat.count(desc.bitDepth) == 0) {
-                        flexSemiPlanarPixelFormat.emplace(desc.bitDepth, desc.pixelFormat);
+                    if (desc.layout == C2Color::SEMIPLANAR_PACKED && !flexSemiPlanarPixelFormat) {
+                        flexSemiPlanarPixelFormat = desc.pixelFormat;
                     }
                 }
             }
@@ -1052,7 +1050,7 @@ void CCodec::configure(const sp<AMessage> &msg) {
                 if (!(config->mDomain & Config::IS_ENCODER)) {
                     if (surface == nullptr) {
                         const char *prefix = "";
-                        if (flexSemiPlanarPixelFormat.count(8) != 0) {
+                        if (flexSemiPlanarPixelFormat) {
                             format = COLOR_FormatYUV420SemiPlanar;
                             prefix = "semi-";
                         } else {
@@ -1069,34 +1067,17 @@ void CCodec::configure(const sp<AMessage> &msg) {
                 if ((config->mDomain & Config::IS_ENCODER) || !surface) {
                     switch (format) {
                         case COLOR_FormatYUV420Flexible:
-                            format = COLOR_FormatYUV420Planar;
-                            if (flexPixelFormat.count(8) != 0) {
-                                format = flexPixelFormat[8];
-                            }
+                            format = flexPixelFormat.value_or(COLOR_FormatYUV420Planar);
                             break;
                         case COLOR_FormatYUV420Planar:
                         case COLOR_FormatYUV420PackedPlanar:
-                            if (flexPlanarPixelFormat.count(8) != 0) {
-                                format = flexPlanarPixelFormat[8];
-                            } else if (flexPixelFormat.count(8) != 0) {
-                                format = flexPixelFormat[8];
-                            }
+                            format = flexPlanarPixelFormat.value_or(
+                                    flexPixelFormat.value_or(format));
                             break;
                         case COLOR_FormatYUV420SemiPlanar:
                         case COLOR_FormatYUV420PackedSemiPlanar:
-                            if (flexSemiPlanarPixelFormat.count(8) != 0) {
-                                format = flexSemiPlanarPixelFormat[8];
-                            } else if (flexPixelFormat.count(8) != 0) {
-                                format = flexPixelFormat[8];
-                            }
-                            break;
-                        case COLOR_FormatYUVP010:
-                            format = COLOR_FormatYUVP010;
-                            if (flexSemiPlanarPixelFormat.count(10) != 0) {
-                                format = flexSemiPlanarPixelFormat[10];
-                            } else if (flexPixelFormat.count(10) != 0) {
-                                format = flexPixelFormat[10];
-                            }
+                            format = flexSemiPlanarPixelFormat.value_or(
+                                    flexPixelFormat.value_or(format));
                             break;
                         default:
                             // No-op
@@ -1232,25 +1213,11 @@ void CCodec::configure(const sp<AMessage> &msg) {
         std::initializer_list<C2Param::Index> indices {
             colorAspectsRequestIndex.withStream(0u),
         };
-        int32_t colorTransferRequest = 0;
-        if (config->mDomain & (Config::IS_IMAGE | Config::IS_VIDEO)
-                && !sdkParams->findInt32("color-transfer-request", &colorTransferRequest)) {
-            colorTransferRequest = 0;
-        }
-        c2_status_t c2err = C2_OK;
-        if (colorTransferRequest != 0) {
-            c2err = comp->query(
-                    { &usage, &maxInputSize, &prepend },
-                    indices,
-                    C2_DONT_BLOCK,
-                    &params);
-        } else {
-            c2err = comp->query(
-                    { &usage, &maxInputSize, &prepend },
-                    {},
-                    C2_DONT_BLOCK,
-                    &params);
-        }
+        c2_status_t c2err = comp->query(
+                { &usage, &maxInputSize, &prepend },
+                indices,
+                C2_DONT_BLOCK,
+                &params);
         if (c2err != C2_OK && c2err != C2_BAD_INDEX) {
             ALOGE("Failed to query component interface: %d", c2err);
             return UNKNOWN_ERROR;
@@ -1365,8 +1332,8 @@ void CCodec::configure(const sp<AMessage> &msg) {
             }
         }
 
+        // set channel-mask
         if (config->mDomain & Config::IS_AUDIO) {
-            // set channel-mask
             int32_t mask;
             if (msg->findInt32(KEY_CHANNEL_MASK, &mask)) {
                 if (config->mDomain & Config::IS_ENCODER) {
@@ -1374,15 +1341,6 @@ void CCodec::configure(const sp<AMessage> &msg) {
                 } else {
                     config->mOutputFormat->setInt32(KEY_CHANNEL_MASK, mask);
                 }
-            }
-
-            // set PCM encoding
-            int32_t pcmEncoding = kAudioEncodingPcm16bit;
-            msg->findInt32(KEY_PCM_ENCODING, &pcmEncoding);
-            if (encoder) {
-                config->mInputFormat->setInt32("android._config-pcm-encoding", pcmEncoding);
-            } else {
-                config->mOutputFormat->setInt32("android._config-pcm-encoding", pcmEncoding);
             }
         }
 
@@ -1392,6 +1350,11 @@ void CCodec::configure(const sp<AMessage> &msg) {
                 ALOGI("found color transfer request param");
                 colorTransferRequestParam = std::move(param);
             }
+        }
+        int32_t colorTransferRequest = 0;
+        if (config->mDomain & (Config::IS_IMAGE | Config::IS_VIDEO)
+                && !sdkParams->findInt32("color-transfer-request", &colorTransferRequest)) {
+            colorTransferRequest = 0;
         }
 
         if (colorTransferRequest != 0) {
@@ -1457,31 +1420,6 @@ void CCodec::configure(const sp<AMessage> &msg) {
                 }
             }
         }
-
-        if (config->mTunneled) {
-            config->mOutputFormat->setInt32("android._tunneled", 1);
-        }
-
-        // Convert an encoding statistics level to corresponding encoding statistics
-        // kinds
-        int32_t encodingStatisticsLevel = VIDEO_ENCODING_STATISTICS_LEVEL_NONE;
-        if ((config->mDomain & Config::IS_ENCODER)
-            && (config->mDomain & Config::IS_VIDEO)
-            && msg->findInt32(KEY_VIDEO_ENCODING_STATISTICS_LEVEL, &encodingStatisticsLevel)) {
-            // Higher level include all the enc stats belong to lower level.
-            switch (encodingStatisticsLevel) {
-                // case VIDEO_ENCODING_STATISTICS_LEVEL_2: // reserved for the future level 2
-                                                           // with more enc stat kinds
-                // Future extended encoding statistics for the level 2 should be added here
-                case VIDEO_ENCODING_STATISTICS_LEVEL_1:
-                    config->subscribeToConfigUpdate(comp,
-                        {kParamIndexAverageBlockQuantization, kParamIndexPictureType});
-                    break;
-                case VIDEO_ENCODING_STATISTICS_LEVEL_NONE:
-                    break;
-            }
-        }
-        ALOGD("encoding statistics level = %d", encodingStatisticsLevel);
 
         ALOGD("setup formats input: %s",
                 config->mInputFormat->debugString().c_str());
@@ -1958,25 +1896,14 @@ status_t CCodec::setSurface(const sp<Surface> &surface) {
     {
         Mutexed<std::unique_ptr<Config>>::Locked configLocked(mConfig);
         const std::unique_ptr<Config> &config = *configLocked;
-        sp<ANativeWindow> nativeWindow = static_cast<ANativeWindow *>(surface.get());
-        status_t err = OK;
-
         if (config->mTunneled && config->mSidebandHandle != nullptr) {
-            err = native_window_set_sideband_stream(
+            sp<ANativeWindow> nativeWindow = static_cast<ANativeWindow *>(surface.get());
+            status_t err = native_window_set_sideband_stream(
                     nativeWindow.get(),
                     const_cast<native_handle_t *>(config->mSidebandHandle->handle()));
             if (err != OK) {
                 ALOGE("NativeWindow(%p) native_window_set_sideband_stream(%p) failed! (err %d).",
                         nativeWindow.get(), config->mSidebandHandle->handle(), err);
-                return err;
-            }
-        } else {
-            // Explicitly reset the sideband handle of the window for
-            // non-tunneled video in case the window was previously used
-            // for a tunneled video playback.
-            err = native_window_set_sideband_stream(nativeWindow.get(), nullptr);
-            if (err != OK) {
-                ALOGE("native_window_set_sideband_stream(nullptr) failed! (err %d).", err);
                 return err;
             }
         }

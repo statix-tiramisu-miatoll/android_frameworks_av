@@ -28,6 +28,7 @@ using ::android::hardware::MessageQueue;
 
 namespace android {
 namespace effect {
+namespace CPP_VERSION {
 
 using namespace ::android::hardware::audio::effect::CPP_VERSION;
 
@@ -62,7 +63,7 @@ class EffectHalHidl : public EffectHalInterface
 
     virtual status_t dump(int fd);
 
-    virtual uint64_t effectId() const { return mEffectId; }
+    uint64_t effectId() const { return mEffectId; }
 
   private:
     friend class EffectsFactoryHalHidl;
@@ -95,6 +96,7 @@ class EffectHalHidl : public EffectHalInterface
     status_t setProcessBuffers();
 };
 
+} // namespace CPP_VERSION
 } // namespace effect
 } // namespace android
 

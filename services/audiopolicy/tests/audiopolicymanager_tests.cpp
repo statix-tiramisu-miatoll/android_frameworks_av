@@ -151,7 +151,7 @@ class AudioPolicyManagerTest : public testing::Test {
 void AudioPolicyManagerTest::SetUp() {
     mClient.reset(getClient());
     mManager.reset(new AudioPolicyTestManager(mClient.get()));
-    ASSERT_NO_FATAL_FAILURE(SetUpManagerConfig());  // Subclasses may want to customize the config.
+    SetUpManagerConfig();  // Subclasses may want to customize the config.
     ASSERT_EQ(NO_ERROR, mManager->initialize());
     ASSERT_EQ(NO_ERROR, mManager->initCheck());
 }
@@ -401,7 +401,7 @@ INSTANTIATE_TEST_CASE_P(
 
 void AudioPolicyManagerTestMsd::SetUpManagerConfig() {
     // TODO: Consider using Serializer to load part of the config from a string.
-    ASSERT_NO_FATAL_FAILURE(AudioPolicyManagerTest::SetUpManagerConfig());
+    AudioPolicyManagerTest::SetUpManagerConfig();
     AudioPolicyConfig& config = mManager->getConfig();
     mMsdOutputDevice = new DeviceDescriptor(AUDIO_DEVICE_OUT_BUS);
     sp<AudioProfile> pcmOutputProfile = new AudioProfile(
@@ -660,7 +660,6 @@ const std::string AudioPolicyManagerTestWithConfigurationFile::sDefaultConfig =
 void AudioPolicyManagerTestWithConfigurationFile::SetUpManagerConfig() {
     status_t status = deserializeAudioPolicyFile(getConfigFile().c_str(), &mManager->getConfig());
     ASSERT_EQ(NO_ERROR, status);
-    mManager->getConfig().setSource(getConfigFile());
 }
 
 TEST_F(AudioPolicyManagerTestWithConfigurationFile, InitSuccess) {
@@ -804,8 +803,7 @@ TEST_F(AudioPolicyManagerTestDynamicPolicy, UnregisterPolicyMixes) {
 }
 
 class AudioPolicyManagerTestForHdmi
-        : public AudioPolicyManagerTestWithConfigurationFile,
-          public testing::WithParamInterface<audio_format_t> {
+        : public AudioPolicyManagerTestWithConfigurationFile {
 protected:
     void SetUp() override;
     std::string getConfigFile() override { return sTvConfig; }
@@ -826,8 +824,7 @@ const std::string AudioPolicyManagerTestForHdmi::sTvConfig =
         "test_settop_box_surround_configuration.xml";
 
 void AudioPolicyManagerTestForHdmi::SetUp() {
-    ASSERT_NO_FATAL_FAILURE(AudioPolicyManagerTest::SetUp());
-    mClient->addSupportedFormat(AUDIO_FORMAT_AC3);
+    AudioPolicyManagerTest::SetUp();
     mClient->addSupportedFormat(AUDIO_FORMAT_E_AC3);
     mManager->setDeviceConnectionState(
             AUDIO_DEVICE_OUT_HDMI, AUDIO_POLICY_DEVICE_STATE_AVAILABLE,
@@ -917,89 +914,75 @@ std::unordered_set<audio_format_t>
     return formats;
 }
 
-TEST_P(AudioPolicyManagerTestForHdmi, GetSurroundFormatsReturnsSupportedFormats) {
+TEST_F(AudioPolicyManagerTestForHdmi, GetSurroundFormatsReturnsSupportedFormats) {
     mManager->setForceUse(
             AUDIO_POLICY_FORCE_FOR_ENCODED_SURROUND, AUDIO_POLICY_FORCE_ENCODED_SURROUND_ALWAYS);
     auto surroundFormats = getSurroundFormatsHelper();
-    ASSERT_EQ(1, surroundFormats.count(GetParam()));
+    ASSERT_EQ(1, surroundFormats.count(AUDIO_FORMAT_E_AC3));
 }
 
-TEST_P(AudioPolicyManagerTestForHdmi,
+TEST_F(AudioPolicyManagerTestForHdmi,
         GetSurroundFormatsReturnsManipulatedFormats) {
     mManager->setForceUse(
             AUDIO_POLICY_FORCE_FOR_ENCODED_SURROUND, AUDIO_POLICY_FORCE_ENCODED_SURROUND_MANUAL);
 
     status_t ret =
-            mManager->setSurroundFormatEnabled(GetParam(), false /*enabled*/);
+            mManager->setSurroundFormatEnabled(AUDIO_FORMAT_E_AC3, false /*enabled*/);
     ASSERT_EQ(NO_ERROR, ret);
     auto surroundFormats = getSurroundFormatsHelper();
-    ASSERT_EQ(1, surroundFormats.count(GetParam()));
-    ASSERT_FALSE(surroundFormats[GetParam()]);
+    ASSERT_EQ(1, surroundFormats.count(AUDIO_FORMAT_E_AC3));
+    ASSERT_FALSE(surroundFormats[AUDIO_FORMAT_E_AC3]);
 
-    ret = mManager->setSurroundFormatEnabled(GetParam(), true /*enabled*/);
+    ret = mManager->setSurroundFormatEnabled(AUDIO_FORMAT_E_AC3, true /*enabled*/);
     ASSERT_EQ(NO_ERROR, ret);
     surroundFormats = getSurroundFormatsHelper();
-    ASSERT_EQ(1, surroundFormats.count(GetParam()));
-    ASSERT_TRUE(surroundFormats[GetParam()]);
+    ASSERT_EQ(1, surroundFormats.count(AUDIO_FORMAT_E_AC3));
+    ASSERT_TRUE(surroundFormats[AUDIO_FORMAT_E_AC3]);
 
-    ret = mManager->setSurroundFormatEnabled(GetParam(), false /*enabled*/);
+    ret = mManager->setSurroundFormatEnabled(AUDIO_FORMAT_E_AC3, false /*enabled*/);
     ASSERT_EQ(NO_ERROR, ret);
     surroundFormats = getSurroundFormatsHelper();
-    ASSERT_EQ(1, surroundFormats.count(GetParam()));
-    ASSERT_FALSE(surroundFormats[GetParam()]);
+    ASSERT_EQ(1, surroundFormats.count(AUDIO_FORMAT_E_AC3));
+    ASSERT_FALSE(surroundFormats[AUDIO_FORMAT_E_AC3]);
 }
 
-TEST_P(AudioPolicyManagerTestForHdmi,
+TEST_F(AudioPolicyManagerTestForHdmi,
         ListAudioPortsReturnManipulatedHdmiFormats) {
     mManager->setForceUse(
             AUDIO_POLICY_FORCE_FOR_ENCODED_SURROUND, AUDIO_POLICY_FORCE_ENCODED_SURROUND_MANUAL);
 
-    ASSERT_EQ(NO_ERROR, mManager->setSurroundFormatEnabled(GetParam(), false /*enabled*/));
+    ASSERT_EQ(NO_ERROR, mManager->setSurroundFormatEnabled(AUDIO_FORMAT_E_AC3, false /*enabled*/));
     auto formats = getFormatsFromPorts();
-    ASSERT_EQ(0, formats.count(GetParam()));
+    ASSERT_EQ(0, formats.count(AUDIO_FORMAT_E_AC3));
 
-    ASSERT_EQ(NO_ERROR, mManager->setSurroundFormatEnabled(GetParam(), true /*enabled*/));
+    ASSERT_EQ(NO_ERROR, mManager->setSurroundFormatEnabled(AUDIO_FORMAT_E_AC3, true /*enabled*/));
     formats = getFormatsFromPorts();
-    ASSERT_EQ(1, formats.count(GetParam()));
+    ASSERT_EQ(1, formats.count(AUDIO_FORMAT_E_AC3));
 }
 
-TEST_P(AudioPolicyManagerTestForHdmi,
+TEST_F(AudioPolicyManagerTestForHdmi,
         GetReportedSurroundFormatsReturnsHdmiReportedFormats) {
     mManager->setForceUse(
             AUDIO_POLICY_FORCE_FOR_ENCODED_SURROUND, AUDIO_POLICY_FORCE_ENCODED_SURROUND_ALWAYS);
     auto surroundFormats = getReportedSurroundFormatsHelper();
-    ASSERT_EQ(1, std::count(surroundFormats.begin(), surroundFormats.end(), GetParam()));
+    ASSERT_EQ(1, std::count(surroundFormats.begin(), surroundFormats.end(), AUDIO_FORMAT_E_AC3));
 }
 
-TEST_P(AudioPolicyManagerTestForHdmi,
+TEST_F(AudioPolicyManagerTestForHdmi,
         GetReportedSurroundFormatsReturnsNonManipulatedHdmiReportedFormats) {
     mManager->setForceUse(
             AUDIO_POLICY_FORCE_FOR_ENCODED_SURROUND, AUDIO_POLICY_FORCE_ENCODED_SURROUND_MANUAL);
 
-    status_t ret = mManager->setSurroundFormatEnabled(GetParam(), false /*enabled*/);
+    status_t ret = mManager->setSurroundFormatEnabled(AUDIO_FORMAT_E_AC3, false /*enabled*/);
     ASSERT_EQ(NO_ERROR, ret);
     auto surroundFormats = getReportedSurroundFormatsHelper();
-    ASSERT_EQ(1, std::count(surroundFormats.begin(), surroundFormats.end(), GetParam()));
+    ASSERT_EQ(1, std::count(surroundFormats.begin(), surroundFormats.end(), AUDIO_FORMAT_E_AC3));
 
-    ret = mManager->setSurroundFormatEnabled(GetParam(), true /*enabled*/);
+    ret = mManager->setSurroundFormatEnabled(AUDIO_FORMAT_E_AC3, true /*enabled*/);
     ASSERT_EQ(NO_ERROR, ret);
     surroundFormats = getReportedSurroundFormatsHelper();
-    ASSERT_EQ(1, std::count(surroundFormats.begin(), surroundFormats.end(), GetParam()));
+    ASSERT_EQ(1, std::count(surroundFormats.begin(), surroundFormats.end(), AUDIO_FORMAT_E_AC3));
 }
-
-TEST_P(AudioPolicyManagerTestForHdmi, GetSurroundFormatsIgnoresSupportedFormats) {
-    mManager->setForceUse(
-            AUDIO_POLICY_FORCE_FOR_ENCODED_SURROUND, AUDIO_POLICY_FORCE_ENCODED_SURROUND_NEVER);
-    auto surroundFormats = getSurroundFormatsHelper();
-    ASSERT_EQ(1, surroundFormats.count(GetParam()));
-    ASSERT_FALSE(surroundFormats[GetParam()]);
-}
-
-INSTANTIATE_TEST_SUITE_P(SurroundFormatSupport, AudioPolicyManagerTestForHdmi,
-        testing::Values(AUDIO_FORMAT_AC3, AUDIO_FORMAT_E_AC3),
-        [](const ::testing::TestParamInfo<AudioPolicyManagerTestForHdmi::ParamType>& info) {
-            return audio_format_to_string(info.param);
-        });
 
 class AudioPolicyManagerTestDPNoRemoteSubmixModule : public AudioPolicyManagerTestDynamicPolicy {
 protected:
@@ -1052,7 +1035,7 @@ protected:
 };
 
 void AudioPolicyManagerTestDPPlaybackReRouting::SetUp() {
-    ASSERT_NO_FATAL_FAILURE(AudioPolicyManagerTestDynamicPolicy::SetUp());
+    AudioPolicyManagerTestDynamicPolicy::SetUp();
 
     mTracker.reset(new RecordingActivityTracker());
 
@@ -1238,7 +1221,7 @@ protected:
 };
 
 void AudioPolicyManagerTestDPMixRecordInjection::SetUp() {
-    ASSERT_NO_FATAL_FAILURE(AudioPolicyManagerTestDynamicPolicy::SetUp());
+    AudioPolicyManagerTestDynamicPolicy::SetUp();
 
     mTracker.reset(new RecordingActivityTracker());
 
@@ -1392,8 +1375,7 @@ TEST_P(AudioPolicyManagerTestDeviceConnection, SetDeviceConnectionState) {
     if (type == AUDIO_DEVICE_OUT_HDMI) {
         // Set device connection state failed due to no device descriptor found
         // For HDMI case, it is easier to simulate device descriptor not found error
-        // by using an encoded format which isn't listed in the 'encodedFormats'
-        // attribute for this devicePort.
+        // by using a undeclared encoded format.
         ASSERT_EQ(INVALID_OPERATION, mManager->setDeviceConnectionState(
                 type, AUDIO_POLICY_DEVICE_STATE_AVAILABLE,
                 address.c_str(), name.c_str(), AUDIO_FORMAT_MAT_2_1));
@@ -1537,7 +1519,7 @@ protected:
 };
 
 void AudioPolicyManagerDynamicHwModulesTest::SetUpManagerConfig() {
-    ASSERT_NO_FATAL_FAILURE(AudioPolicyManagerTestWithConfigurationFile::SetUpManagerConfig());
+    AudioPolicyManagerTestWithConfigurationFile::SetUpManagerConfig();
     // Only allow successful opening of "primary" hw module during APM initialization.
     mClient->swapAllowedModuleNames({"primary"});
 }
