@@ -37,10 +37,6 @@ using android::content::AttributionSourceState;
 using namespace android;
 using namespace aaudio;
 
-static void sCallbackWrapper(int event, void* userData, void* info) {
-    static_cast<AudioStreamRecord*>(userData)->processCallback(event, info);
-}
-
 AudioStreamRecord::AudioStreamRecord()
     : AudioStreamLegacy()
     , mFixedBlockWriter(*this)
@@ -69,8 +65,11 @@ aaudio_result_t AudioStreamRecord::open(const AudioStreamBuilder& builder)
     const audio_session_t sessionId = AAudioConvert_aaudioToAndroidSessionId(requestedSessionId);
 
     // TODO Support UNSPECIFIED in AudioRecord. For now, use stereo if unspecified.
-    audio_channel_mask_t channelMask =
-            AAudio_getChannelMaskForOpen(getChannelMask(), getSamplesPerFrame(), true /*isInput*/);
+    int32_t samplesPerFrame = (getSamplesPerFrame() == AAUDIO_UNSPECIFIED)
+                              ? 2 : getSamplesPerFrame();
+    audio_channel_mask_t channelMask = samplesPerFrame <= 2 ?
+                               audio_channel_in_mask_from_count(samplesPerFrame) :
+                               audio_channel_mask_for_index_assignment_from_count(samplesPerFrame);
 
     size_t frameCount = (builder.getBufferCapacity() == AAUDIO_UNSPECIFIED) ? 0
                         : builder.getBufferCapacity();
@@ -116,7 +115,7 @@ aaudio_result_t AudioStreamRecord::open(const AudioStreamBuilder& builder)
     constexpr int32_t kMostLikelySampleRateForFast = 48000;
     if (getFormat() == AUDIO_FORMAT_PCM_FLOAT
             && perfMode == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY
-            && (audio_channel_count_from_in_mask(channelMask) <= 2) // FAST only for mono and stereo
+            && (samplesPerFrame <= 2) // FAST only for mono and stereo
             && (getSampleRate() == kMostLikelySampleRateForFast
                 || getSampleRate() == AAUDIO_UNSPECIFIED)) {
         setDeviceFormat(AUDIO_FORMAT_PCM_16_BIT);
@@ -128,12 +127,12 @@ aaudio_result_t AudioStreamRecord::open(const AudioStreamBuilder& builder)
     uint32_t notificationFrames = 0;
 
     // Setup the callback if there is one.
-    AudioRecord::legacy_callback_t callback = nullptr;
+    AudioRecord::callback_t callback = nullptr;
     void *callbackData = nullptr;
     AudioRecord::transfer_type streamTransferType = AudioRecord::transfer_type::TRANSFER_SYNC;
     if (builder.getDataCallbackProc() != nullptr) {
         streamTransferType = AudioRecord::transfer_type::TRANSFER_CALLBACK;
-        callback = sCallbackWrapper;
+        callback = getLegacyCallback();
         callbackData = this;
     }
     mCallbackBufferSize = builder.getFramesPerDataCallback();
@@ -229,9 +228,7 @@ aaudio_result_t AudioStreamRecord::open(const AudioStreamBuilder& builder)
             .set(AMEDIAMETRICS_PROP_ENCODINGCLIENT, toString(requestedFormat).c_str()).record();
 
     // Get the actual values from the AudioRecord.
-    setChannelMask(AAudioConvert_androidToAAudioChannelMask(
-            mAudioRecord->channelMask(), true /*isInput*/,
-            AAudio_isChannelIndexMask(getChannelMask())));
+    setSamplesPerFrame(mAudioRecord->channelCount());
     setSampleRate(mAudioRecord->getSampleRate());
     setBufferCapacity(getBufferCapacityFromDevice());
     setFramesPerBurst(getFramesPerBurstFromDevice());
@@ -357,15 +354,14 @@ const void * AudioStreamRecord::maybeConvertDeviceData(const void *audioData, in
 void AudioStreamRecord::processCallback(int event, void *info) {
     switch (event) {
         case AudioRecord::EVENT_MORE_DATA:
-        {
-            AudioTrack::Buffer *audioBuffer = static_cast<AudioTrack::Buffer *>(info);
-            audioBuffer->size = onMoreData(*audioBuffer);
+            processCallbackCommon(AAUDIO_CALLBACK_OPERATION_PROCESS_DATA, info);
             break;
-        }
+
             // Stream got rerouted so we disconnect.
         case AudioRecord::EVENT_NEW_IAUDIORECORD:
-            onNewIAudioTrack();
+            processCallbackCommon(AAUDIO_CALLBACK_OPERATION_DISCONNECTED, info);
             break;
+
         default:
             break;
     }
@@ -509,7 +505,7 @@ aaudio_result_t AudioStreamRecord::read(void *buffer,
     return (aaudio_result_t) framesRead;
 }
 
-aaudio_result_t AudioStreamRecord::setBufferSize(int32_t /*requestedFrames*/)
+aaudio_result_t AudioStreamRecord::setBufferSize(int32_t requestedFrames)
 {
     return getBufferSize();
 }
@@ -557,7 +553,7 @@ int64_t AudioStreamRecord::getFramesWritten() {
         case AAUDIO_STREAM_STATE_STARTED:
             result = mAudioRecord->getPosition(&position);
             if (result == OK) {
-                mFramesWritten.update32((int32_t)position);
+                mFramesWritten.update32(position);
             }
             break;
         case AAUDIO_STREAM_STATE_STOPPING:
