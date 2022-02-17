@@ -34,6 +34,7 @@ cc_library {
         "SchedulingPolicyService.cpp",
         "ServiceUtilities.cpp",
         "TimeCheck.cpp",
+        "TimerThread.cpp",
     ],
     static_libs: [
         "libc_malloc_debug_backtrace",
@@ -51,6 +52,7 @@ cc_library {
         "libpermission",
         "android.hardware.graphics.bufferqueue@1.0",
         "android.hidl.token@1.0-utils",
+        "packagemanager_aidl-cpp",
     ],
     export_static_lib_headers: [
         "libbatterystats_aidl",
@@ -81,9 +83,51 @@ cc_library {
     export_include_dirs: ["include"],
 }
 
+cc_library {
+    name: "libmediautils_vendor",
+    vendor_available: true,  // required for platform/hardware/interfaces
+    srcs: [
+        "MemoryLeakTrackUtil.cpp",
+    ],
+
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+    shared_libs: [
+        "liblog",
+        "libutils",
+    ],
+
+    static_libs: [
+        "libc_malloc_debug_backtrace",
+    ],
+
+    header_libs: [
+        "bionic_libc_platform_headers",
+    ],
+
+    local_include_dirs: ["include"],
+    export_include_dirs: ["include"],
+}
+
+
 cc_library_headers {
     name: "libmediautils_headers",
     vendor_available: true,  // required for platform/hardware/interfaces
 
     export_include_dirs: ["include"],
+}
+
+cc_test {
+    name: "libmediautils_test",
+    srcs: [
+        "memory-test.cpp",
+        "TimerThread-test.cpp",
+    ],
+    shared_libs: [
+      "libmediautils",
+      "libutils",
+    ]
 }
