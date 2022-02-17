@@ -15,6 +15,7 @@
  */
 
 //#define LOG_NDEBUG 0
+#include "include/HeifDecoderAPI.h"
 #define LOG_TAG "HeifDecoderImpl"
 
 #include "HeifDecoderImpl.h"
@@ -471,7 +472,7 @@ bool HeifDecoderImpl::getEncodedColor(HeifEncodedColor* /*outColor*/) const {
 }
 
 bool HeifDecoderImpl::setOutputColor(HeifColorFormat heifColor) {
-    if (heifColor == mOutputColor) {
+    if (heifColor == (HeifColorFormat)mOutputColor) {
         return true;
     }
 
@@ -489,6 +490,11 @@ bool HeifDecoderImpl::setOutputColor(HeifColorFormat heifColor) {
         case kHeifColorFormat_BGRA_8888:
         {
             mOutputColor = HAL_PIXEL_FORMAT_BGRA_8888;
+            break;
+        }
+        case kHeifColorFormat_RGBA_1010102:
+        {
+            mOutputColor = HAL_PIXEL_FORMAT_RGBA_1010102;
             break;
         }
         default:
