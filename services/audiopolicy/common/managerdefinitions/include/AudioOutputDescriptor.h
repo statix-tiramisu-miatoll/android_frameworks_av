@@ -149,7 +149,7 @@ public:
                           AudioPolicyClientInterface *clientInterface);
     virtual ~AudioOutputDescriptor() {}
 
-    void dump(String8 *dst) const override;
+    void dump(String8 *dst, int spaces, const char* extraInfo = nullptr) const override;
     void        log(const char* indent);
 
     virtual DeviceVector devices() const { return mDevices; }
@@ -270,8 +270,10 @@ public:
     audio_patch_handle_t getPatchHandle() const override;
     void setPatchHandle(audio_patch_handle_t handle) override;
     bool isMmap() override {
-        if (getPolicyAudioPort() != nullptr) {
-            return getPolicyAudioPort()->isMmap();
+        if (const auto policyPort = getPolicyAudioPort(); policyPort != nullptr) {
+            if (const auto port = policyPort->asAudioPort(); port != nullptr) {
+                return port->isMmap();
+            }
         }
         return false;
     }
@@ -307,11 +309,14 @@ public:
     DeviceVector mDevices; /**< current devices this output is routed to */
     wp<AudioPolicyMix> mPolicyMix;  // non NULL when used by a dynamic policy
 
+    virtual uint32_t getRecommendedMuteDurationMs() const { return 0; }
+
 protected:
     const sp<PolicyAudioPort> mPolicyAudioPort;
     AudioPolicyClientInterface * const mClientInterface;
     uint32_t mGlobalActiveCount = 0;  // non-client-specific active count
     audio_patch_handle_t mPatchHandle = AUDIO_PATCH_HANDLE_NONE;
+    audio_output_flags_t& mFlags = AudioPortConfig::mFlags.output;
 
     // The ActiveClients shows the clients that contribute to the @VolumeSource counts
     // and may include upstream clients from a duplicating thread.
@@ -332,7 +337,7 @@ public:
                             AudioPolicyClientInterface *clientInterface);
     virtual ~SwAudioOutputDescriptor() {}
 
-            void dump(String8 *dst) const override;
+    void dump(String8 *dst, int spaces, const char* extraInfo = nullptr) const override;
     virtual DeviceVector devices() const;
     void setDevices(const DeviceVector &devices) { mDevices = devices; }
     bool sharesHwModuleWith(const sp<SwAudioOutputDescriptor>& outputDesc);
@@ -362,7 +367,8 @@ public:
                            const struct audio_port_config *srcConfig = NULL) const;
     virtual void toAudioPort(struct audio_port_v7 *port) const;
 
-        status_t open(const audio_config_t *config,
+        status_t open(const audio_config_t *halConfig,
+                      const audio_config_base_t *mixerConfig,
                       const DeviceVector &devices,
                       audio_stream_type_t stream,
                       audio_output_flags_t flags,
@@ -414,15 +420,18 @@ public:
      */
     DeviceVector filterSupportedDevices(const DeviceVector &devices) const;
 
+    uint32_t getRecommendedMuteDurationMs() const override;
+
     const sp<IOProfile> mProfile;          // I/O profile this output derives from
     audio_io_handle_t mIoHandle;           // output handle
     uint32_t mLatency;                  //
-    audio_output_flags_t mFlags;   //
+    using AudioOutputDescriptor::mFlags;
     sp<SwAudioOutputDescriptor> mOutput1;    // used by duplicated outputs: first output
     sp<SwAudioOutputDescriptor> mOutput2;    // used by duplicated outputs: second output
     uint32_t mDirectOpenCount; // number of clients using this output (direct outputs only)
     audio_session_t mDirectClientSession; // session id of the direct output client
     bool mPendingReopenToQueryProfiles = false;
+    audio_channel_mask_t mMixerChannelMask = AUDIO_CHANNEL_NONE;
 };
 
 // Audio output driven by an input device directly.
@@ -433,7 +442,7 @@ public:
                             AudioPolicyClientInterface *clientInterface);
     virtual ~HwAudioOutputDescriptor() {}
 
-            void dump(String8 *dst) const override;
+    void dump(String8 *dst, int spaces, const char* extraInfo) const override;
 
     virtual bool setVolume(float volumeDb,
                            VolumeSource volumeSource, const StreamTypeVector &streams,
