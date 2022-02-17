@@ -19,6 +19,7 @@
 #include <utils/Log.h>
 
 #include <algorithm>
+#include <atomic>
 #include <list>
 #include <numeric>
 
@@ -155,6 +156,7 @@ CCodecBufferChannel::CCodecBufferChannel(
         input->pipelineDelay = 0u;
         input->numSlots = kSmoothnessFactor;
         input->numExtraSlots = 0u;
+        input->lastFlushIndex = 0u;
     }
     {
         Mutexed<Output>::Locked output(mOutput);
@@ -252,7 +254,7 @@ status_t CCodecBufferChannel::queueInputBufferInternal(
                 bool released = input->buffers->releaseBuffer(buffer, nullptr, true);
                 ALOGV("[%s] queueInputBuffer: buffer copied; %sreleased",
                       mName, released ? "" : "not ");
-                buffer.clear();
+                buffer = copy;
             } else {
                 ALOGW("[%s] queueInputBuffer: failed to copy a buffer; this may cause input "
                       "buffer starvation on component.", mName);
@@ -280,6 +282,12 @@ status_t CCodecBufferChannel::queueInputBufferInternal(
             }
         }
     } else if (eos) {
+        Mutexed<Input>::Locked input(mInput);
+        if (input->frameReassembler) {
+            usesFrameReassembler = true;
+            // drain any pending items with eos
+            input->frameReassembler.process(buffer, &items);
+        }
         flags |= C2FrameData::FLAG_END_OF_STREAM;
     }
     if (usesFrameReassembler) {
@@ -339,10 +347,10 @@ status_t CCodecBufferChannel::queueInputBufferInternal(
     } else {
         Mutexed<Input>::Locked input(mInput);
         bool released = false;
-        if (buffer) {
-            released = input->buffers->releaseBuffer(buffer, nullptr, true);
-        } else if (copy) {
+        if (copy) {
             released = input->extraBuffers.releaseSlot(copy, nullptr, true);
+        } else if (buffer) {
+            released = input->buffers->releaseBuffer(buffer, nullptr, true);
         }
         ALOGV("[%s] queueInputBuffer: buffer%s %sreleased",
               mName, (buffer == nullptr) ? "(copy)" : "", released ? "" : "not ");
@@ -832,6 +840,35 @@ status_t CCodecBufferChannel::renderOutputBuffer(
         hdr10PlusInfo.reset();
     }
 
+    // HDR dynamic info
+    std::shared_ptr<const C2StreamHdrDynamicMetadataInfo::output> hdrDynamicInfo =
+        std::static_pointer_cast<const C2StreamHdrDynamicMetadataInfo::output>(
+                c2Buffer->getInfo(C2StreamHdrDynamicMetadataInfo::output::PARAM_TYPE));
+    // TODO: make this sticky & enable unset
+    if (hdrDynamicInfo && hdrDynamicInfo->flexCount() == 0) {
+        hdrDynamicInfo.reset();
+    }
+
+    if (hdr10PlusInfo) {
+        // C2StreamHdr10PlusInfo is deprecated; components should use
+        // C2StreamHdrDynamicMetadataInfo
+        // TODO: #metric
+        if (hdrDynamicInfo) {
+            // It is unexpected that C2StreamHdr10PlusInfo and
+            // C2StreamHdrDynamicMetadataInfo is both present.
+            // C2StreamHdrDynamicMetadataInfo takes priority.
+            // TODO: #metric
+        } else {
+            std::shared_ptr<C2StreamHdrDynamicMetadataInfo::output> info =
+                    C2StreamHdrDynamicMetadataInfo::output::AllocShared(
+                            hdr10PlusInfo->flexCount(),
+                            0u,
+                            C2Config::HDR_DYNAMIC_METADATA_TYPE_SMPTE_2094_40);
+            memcpy(info->m.data, hdr10PlusInfo->m.value, hdr10PlusInfo->flexCount());
+            hdrDynamicInfo = info;
+        }
+    }
+
     std::vector<C2ConstGraphicBlock> blocks = c2Buffer->data().graphicBlocks();
     if (blocks.size() != 1u) {
         ALOGD("[%s] expected 1 graphic block, but got %zu", mName, blocks.size());
@@ -851,7 +888,7 @@ status_t CCodecBufferChannel::renderOutputBuffer(
             videoScalingMode,
             transform,
             Fence::NO_FENCE, 0);
-    if (hdrStaticInfo || hdr10PlusInfo) {
+    if (hdrStaticInfo || hdrDynamicInfo) {
         HdrMetadata hdr;
         if (hdrStaticInfo) {
             // If mastering max and min luminance fields are 0, do not use them.
@@ -888,13 +925,16 @@ status_t CCodecBufferChannel::renderOutputBuffer(
                 hdr.cta8613 = cta861_meta;
             }
         }
-        if (hdr10PlusInfo) {
+        if (hdrDynamicInfo
+                && hdrDynamicInfo->m.type_ == C2Config::HDR_DYNAMIC_METADATA_TYPE_SMPTE_2094_40) {
             hdr.validTypes |= HdrMetadata::HDR10PLUS;
             hdr.hdr10plus.assign(
-                    hdr10PlusInfo->m.value,
-                    hdr10PlusInfo->m.value + hdr10PlusInfo->flexCount());
+                    hdrDynamicInfo->m.data,
+                    hdrDynamicInfo->m.data + hdrDynamicInfo->flexCount());
         }
         qbi.setHdrMetadata(hdr);
+
+        SetHdrMetadataToGralloc4Handle(hdrStaticInfo, hdrDynamicInfo, block.handle());
     }
     // we don't have dirty regions
     qbi.setSurfaceDamage(Region::INVALID_REGION);
@@ -1116,6 +1156,7 @@ status_t CCodecBufferChannel::start(
         input->numSlots = numInputSlots;
         input->extraBuffers.flush();
         input->numExtraSlots = 0u;
+        input->lastFlushIndex = mFrameIndex.load(std::memory_order_relaxed);
         if (audioEncoder && encoderFrameSize && sampleRate && channelCount) {
             input->frameReassembler.init(
                     pool,
@@ -1379,6 +1420,12 @@ status_t CCodecBufferChannel::start(
                 }
             }
         }
+
+        int32_t tunneled = 0;
+        if (!outputFormat->findInt32("android._tunneled", &tunneled)) {
+            tunneled = 0;
+        }
+        mTunneled = (tunneled != 0);
     }
 
     // Set up pipeline control. This has to be done after mInputBuffers and
@@ -1452,6 +1499,16 @@ status_t CCodecBufferChannel::requestInitialInputBuffers() {
     std::list<std::unique_ptr<C2Work>> flushedConfigs;
     mFlushedConfigs.lock()->swap(flushedConfigs);
     if (!flushedConfigs.empty()) {
+        {
+            Mutexed<PipelineWatcher>::Locked watcher(mPipelineWatcher);
+            PipelineWatcher::Clock::time_point now = PipelineWatcher::Clock::now();
+            for (const std::unique_ptr<C2Work> &work : flushedConfigs) {
+                watcher->onWorkQueued(
+                        work->input.ordinal.frameIndex.peeku(),
+                        std::vector(work->input.buffers),
+                        now);
+            }
+        }
         err = mComponent->queue(&flushedConfigs);
         if (err != C2_OK) {
             ALOGW("[%s] Error while queueing a flushed config", mName);
@@ -1518,40 +1575,45 @@ void CCodecBufferChannel::release() {
     setDescrambler(nullptr);
 }
 
-
 void CCodecBufferChannel::flush(const std::list<std::unique_ptr<C2Work>> &flushedWork) {
     ALOGV("[%s] flush", mName);
-    std::vector<uint64_t> indices;
     std::list<std::unique_ptr<C2Work>> configs;
-    for (const std::unique_ptr<C2Work> &work : flushedWork) {
-        indices.push_back(work->input.ordinal.frameIndex.peeku());
-        if (!(work->input.flags & C2FrameData::FLAG_CODEC_CONFIG)) {
-            continue;
+    mInput.lock()->lastFlushIndex = mFrameIndex.load(std::memory_order_relaxed);
+    {
+        Mutexed<PipelineWatcher>::Locked watcher(mPipelineWatcher);
+        for (const std::unique_ptr<C2Work> &work : flushedWork) {
+            uint64_t frameIndex = work->input.ordinal.frameIndex.peeku();
+            if (!(work->input.flags & C2FrameData::FLAG_CODEC_CONFIG)) {
+                watcher->onWorkDone(frameIndex);
+                continue;
+            }
+            if (work->input.buffers.empty()
+                    || work->input.buffers.front() == nullptr
+                    || work->input.buffers.front()->data().linearBlocks().empty()) {
+                ALOGD("[%s] no linear codec config data found", mName);
+                watcher->onWorkDone(frameIndex);
+                continue;
+            }
+            std::unique_ptr<C2Work> copy(new C2Work);
+            copy->input.flags = C2FrameData::flags_t(
+                    work->input.flags | C2FrameData::FLAG_DROP_FRAME);
+            copy->input.ordinal = work->input.ordinal;
+            copy->input.ordinal.frameIndex = mFrameIndex++;
+            for (size_t i = 0; i < work->input.buffers.size(); ++i) {
+                copy->input.buffers.push_back(watcher->onInputBufferReleased(frameIndex, i));
+            }
+            for (const std::unique_ptr<C2Param> &param : work->input.configUpdate) {
+                copy->input.configUpdate.push_back(C2Param::Copy(*param));
+            }
+            copy->input.infoBuffers.insert(
+                    copy->input.infoBuffers.begin(),
+                    work->input.infoBuffers.begin(),
+                    work->input.infoBuffers.end());
+            copy->worklets.emplace_back(new C2Worklet);
+            configs.push_back(std::move(copy));
+            watcher->onWorkDone(frameIndex);
+            ALOGV("[%s] stashed flushed codec config data", mName);
         }
-        if (work->input.buffers.empty()
-                || work->input.buffers.front() == nullptr
-                || work->input.buffers.front()->data().linearBlocks().empty()) {
-            ALOGD("[%s] no linear codec config data found", mName);
-            continue;
-        }
-        std::unique_ptr<C2Work> copy(new C2Work);
-        copy->input.flags = C2FrameData::flags_t(work->input.flags | C2FrameData::FLAG_DROP_FRAME);
-        copy->input.ordinal = work->input.ordinal;
-        copy->input.ordinal.frameIndex = mFrameIndex++;
-        copy->input.buffers.insert(
-                copy->input.buffers.begin(),
-                work->input.buffers.begin(),
-                work->input.buffers.end());
-        for (const std::unique_ptr<C2Param> &param : work->input.configUpdate) {
-            copy->input.configUpdate.push_back(C2Param::Copy(*param));
-        }
-        copy->input.infoBuffers.insert(
-                copy->input.infoBuffers.begin(),
-                work->input.infoBuffers.begin(),
-                work->input.infoBuffers.end());
-        copy->worklets.emplace_back(new C2Worklet);
-        configs.push_back(std::move(copy));
-        ALOGV("[%s] stashed flushed codec config data", mName);
     }
     mFlushedConfigs.lock()->swap(configs);
     {
@@ -1564,12 +1626,6 @@ void CCodecBufferChannel::flush(const std::list<std::unique_ptr<C2Work>> &flushe
         if (output->buffers) {
             output->buffers->flush(flushedWork);
             output->buffers->flushStash();
-        }
-    }
-    {
-        Mutexed<PipelineWatcher>::Locked watcher(mPipelineWatcher);
-        for (uint64_t index : indices) {
-            watcher->onWorkDone(index);
         }
     }
 }
@@ -1589,12 +1645,18 @@ void CCodecBufferChannel::onInputBufferDone(
     }
     std::shared_ptr<C2Buffer> buffer =
             mPipelineWatcher.lock()->onInputBufferReleased(frameIndex, arrayIndex);
-    bool newInputSlotAvailable;
+    bool newInputSlotAvailable = false;
     {
         Mutexed<Input>::Locked input(mInput);
-        newInputSlotAvailable = input->buffers->expireComponentBuffer(buffer);
-        if (!newInputSlotAvailable) {
-            (void)input->extraBuffers.expireComponentBuffer(buffer);
+        if (input->lastFlushIndex >= frameIndex) {
+            ALOGD("[%s] Ignoring stale input buffer done callback: "
+                  "last flush index = %lld, frameIndex = %lld",
+                  mName, input->lastFlushIndex.peekll(), (long long)frameIndex);
+        } else {
+            newInputSlotAvailable = input->buffers->expireComponentBuffer(buffer);
+            if (!newInputSlotAvailable) {
+                (void)input->extraBuffers.expireComponentBuffer(buffer);
+            }
         }
     }
     if (newInputSlotAvailable) {
@@ -1881,10 +1943,21 @@ bool CCodecBufferChannel::handleWork(
         }
     }
 
+    bool drop = false;
+    if (worklet->output.flags & C2FrameData::FLAG_DROP_FRAME) {
+        ALOGV("[%s] onWorkDone: drop buffer but keep metadata", mName);
+        drop = true;
+    }
+
     if (notifyClient && !buffer && !flags) {
-        ALOGV("[%s] onWorkDone: Not reporting output buffer (%lld)",
-              mName, work->input.ordinal.frameIndex.peekull());
-        notifyClient = false;
+        if (mTunneled && drop && outputFormat) {
+            ALOGV("[%s] onWorkDone: Keep tunneled, drop frame with format change (%lld)",
+                  mName, work->input.ordinal.frameIndex.peekull());
+        } else {
+            ALOGV("[%s] onWorkDone: Not reporting output buffer (%lld)",
+                  mName, work->input.ordinal.frameIndex.peekull());
+            notifyClient = false;
+        }
     }
 
     if (buffer) {
