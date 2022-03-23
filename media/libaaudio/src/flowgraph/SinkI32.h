@@ -19,20 +19,16 @@
 
 #include <stdint.h>
 
-#include "FlowGraphNode.h"
+#include "AudioProcessorBase.h"
 
 namespace flowgraph {
 
-class SinkI32 : public FlowGraphSink {
+class SinkI32 : public AudioSink {
 public:
     explicit SinkI32(int32_t channelCount);
     ~SinkI32() override = default;
 
     int32_t read(void *data, int32_t numFrames) override;
-
-    const char *getName() override {
-        return "SinkI32";
-    }
 };
 
 } /* namespace flowgraph */
