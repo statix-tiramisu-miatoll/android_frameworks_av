@@ -44,6 +44,8 @@ AudioStreamInternalPlay::AudioStreamInternalPlay(AAudioServiceInterface  &servic
 
 }
 
+AudioStreamInternalPlay::~AudioStreamInternalPlay() {}
+
 constexpr int kRampMSec = 10; // time to apply a change in volume
 
 aaudio_result_t AudioStreamInternalPlay::open(const AudioStreamBuilder &builder) {
@@ -52,10 +54,7 @@ aaudio_result_t AudioStreamInternalPlay::open(const AudioStreamBuilder &builder)
         result = mFlowGraph.configure(getFormat(),
                              getSamplesPerFrame(),
                              getDeviceFormat(),
-                             getDeviceChannelCount(),
-                             getRequireMonoBlend(),
-                             getAudioBalance(),
-                             (getSharingMode() == AAUDIO_SHARING_MODE_EXCLUSIVE));
+                             getDeviceChannelCount());
 
         if (result != AAUDIO_OK) {
             safeReleaseClose();
@@ -116,7 +115,7 @@ void AudioStreamInternalPlay::advanceClientToMatchServerPosition(int32_t serverM
 }
 
 void AudioStreamInternalPlay::onFlushFromServer() {
-    advanceClientToMatchServerPosition(0 /*serverMargin*/);
+    advanceClientToMatchServerPosition();
 }
 
 // Write the data, block if needed and timeoutMillis > 0
@@ -282,7 +281,7 @@ void *AudioStreamInternalPlay::callbackLoop() {
     ALOGD("%s() entering >>>>>>>>>>>>>>>", __func__);
     aaudio_result_t result = AAUDIO_OK;
     aaudio_data_callback_result_t callbackResult = AAUDIO_CALLBACK_RESULT_CONTINUE;
-    if (!isDataCallbackSet()) return nullptr;
+    if (!isDataCallbackSet()) return NULL;
     int64_t timeoutNanos = calculateReasonableTimeout(mCallbackFrames);
 
     // result might be a frame count
@@ -310,7 +309,7 @@ void *AudioStreamInternalPlay::callbackLoop() {
 
     ALOGD("%s() exiting, result = %d, isActive() = %d <<<<<<<<<<<<<<",
           __func__, result, (int) isActive());
-    return nullptr;
+    return NULL;
 }
 
 //------------------------------------------------------------------------------
