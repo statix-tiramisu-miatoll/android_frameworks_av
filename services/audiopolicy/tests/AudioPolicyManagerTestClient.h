@@ -37,8 +37,7 @@ public:
 
     status_t openOutput(audio_module_handle_t module,
                         audio_io_handle_t *output,
-                        audio_config_t * /*halConfig*/,
-                        audio_config_base_t * /*mixerConfig*/,
+                        audio_config_t * /*config*/,
                         const sp<DeviceDescriptorBase>& /*device*/,
                         uint32_t * /*latencyMs*/,
                         audio_output_flags_t /*flags*/) override {
@@ -101,11 +100,6 @@ public:
 
     void onAudioPortListUpdate() override {
         ++mAudioPortListUpdateCount;
-    }
-
-    status_t setDeviceConnectedState(
-            const struct audio_port_v7 *port __unused, bool connected __unused) override {
-        return NO_ERROR;
     }
 
     // Helper methods for tests
