@@ -1130,8 +1130,7 @@ status_t HeicCompositeStream::processCompletedInputFrame(int64_t frameNumber,
     // Copy the content of the file to memory.
     sp<GraphicBuffer> gb = GraphicBuffer::from(inputFrame.anb);
     void* dstBuffer;
-    GraphicBufferLocker gbLocker(gb);
-    auto res = gbLocker.lockAsync(&dstBuffer, inputFrame.fenceFd);
+    auto res = gb->lockAsync(GRALLOC_USAGE_SW_WRITE_OFTEN, &dstBuffer, inputFrame.fenceFd);
     if (res != OK) {
         ALOGE("%s: Error trying to lock output buffer fence: %s (%d)", __FUNCTION__,
                 strerror(-res), res);

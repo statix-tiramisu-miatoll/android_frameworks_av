@@ -66,11 +66,10 @@ void CameraServiceProxyWrapper::CameraSessionStatsWrapper::onStreamConfigured(
     }
 }
 
-void CameraServiceProxyWrapper::CameraSessionStatsWrapper::onActive(float maxPreviewFps) {
+void CameraServiceProxyWrapper::CameraSessionStatsWrapper::onActive() {
     Mutex::Autolock l(mLock);
 
     mSessionStats.mNewCameraState = CameraSessionStats::CAMERA_STATE_ACTIVE;
-    mSessionStats.mMaxPreviewFps = maxPreviewFps;
     updateProxyDeviceState(mSessionStats);
 
     // Reset mCreationDuration to -1 to distinguish between 1st session
@@ -121,12 +120,13 @@ void CameraServiceProxyWrapper::pingCameraServiceProxy() {
     proxyBinder->pingForUserUpdate();
 }
 
-int CameraServiceProxyWrapper::getRotateAndCropOverride(String16 packageName, int lensFacing,
-        int userId) {
+bool CameraServiceProxyWrapper::isRotateAndCropOverrideNeeded(
+        String16 packageName, int sensorOrientation, int lensFacing) {
     sp<ICameraServiceProxy> proxyBinder = getCameraServiceProxy();
     if (proxyBinder == nullptr) return true;
-    int ret = 0;
-    auto status = proxyBinder->getRotateAndCropOverride(packageName, lensFacing, userId, &ret);
+    bool ret = true;
+    auto status = proxyBinder->isRotateAndCropOverrideNeeded(packageName, sensorOrientation,
+            lensFacing, &ret);
     if (!status.isOk()) {
         ALOGE("%s: Failed during top activity orientation query: %s", __FUNCTION__,
                 status.exceptionMessage().c_str());
@@ -159,7 +159,7 @@ void CameraServiceProxyWrapper::logStreamConfigured(const String8& id,
     sessionStats->onStreamConfigured(operatingMode, internalConfig, latencyMs);
 }
 
-void CameraServiceProxyWrapper::logActive(const String8& id, float maxPreviewFps) {
+void CameraServiceProxyWrapper::logActive(const String8& id) {
     std::shared_ptr<CameraSessionStatsWrapper> sessionStats;
     {
         Mutex::Autolock l(mLock);
@@ -172,7 +172,7 @@ void CameraServiceProxyWrapper::logActive(const String8& id, float maxPreviewFps
     }
 
     ALOGV("%s: id %s", __FUNCTION__, id.c_str());
-    sessionStats->onActive(maxPreviewFps);
+    sessionStats->onActive();
 }
 
 void CameraServiceProxyWrapper::logIdle(const String8& id,
