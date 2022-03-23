@@ -16,24 +16,12 @@
 
 #define LOG_TAG "TimeCheck"
 
-#include <optional>
-#include <sstream>
-
-#include <mediautils/EventLog.h>
-#include <mediautils/TimeCheck.h>
 #include <utils/Log.h>
+#include <mediautils/TimeCheck.h>
+#include <mediautils/EventLog.h>
 #include "debuggerd/handler.h"
 
-namespace android::mediautils {
-
-namespace {
-
-std::string formatTime(std::chrono::system_clock::time_point t) {
-    auto msSinceEpoch = std::chrono::round<std::chrono::milliseconds>(t.time_since_epoch());
-    return (std::ostringstream() << msSinceEpoch.count()).str();
-}
-
-}  // namespace
+namespace android {
 
 // Audio HAL server pids vector used to generate audio HAL processes tombstone
 // when audioserver watchdog triggers.
@@ -48,7 +36,7 @@ std::string formatTime(std::chrono::system_clock::time_point t) {
 void TimeCheck::accessAudioHalPids(std::vector<pid_t>* pids, bool update) {
     static constexpr int kNumAudioHalPidsVectors = 3;
     static std::vector<pid_t> audioHalPids[kNumAudioHalPidsVectors];
-    static std::atomic<unsigned> curAudioHalPids = 0;
+    static std::atomic<int> curAudioHalPids = 0;
 
     if (update) {
         audioHalPids[(curAudioHalPids++ + 1) % kNumAudioHalPidsVectors] = *pids;
@@ -70,66 +58,84 @@ std::vector<pid_t> TimeCheck::getAudioHalPids() {
 }
 
 /* static */
-TimerThread& TimeCheck::getTimeCheckThread() {
-    static TimerThread sTimeCheckThread{};
+sp<TimeCheck::TimeCheckThread> TimeCheck::getTimeCheckThread()
+{
+    static sp<TimeCheck::TimeCheckThread> sTimeCheckThread = new TimeCheck::TimeCheckThread();
     return sTimeCheckThread;
 }
 
-TimeCheck::TimeCheck(std::string tag, OnTimerFunc&& onTimer, uint32_t timeoutMs,
-        bool crashOnTimeout)
-    : mTimeCheckHandler(new TimeCheckHandler{
-            std::move(tag), std::move(onTimer), crashOnTimeout,
-            std::chrono::system_clock::now(), gettid()})
-    , mTimerHandle(getTimeCheckThread().scheduleTask(
-              // Pass in all the arguments by value to this task for safety.
-              // The thread could call the callback before the constructor is finished.
-              // The destructor will be blocked on the callback, but that is implementation
-              // dependent.
-              [ timeCheckHandler = mTimeCheckHandler ] {
-                  timeCheckHandler->onTimeout();
-              },
-              std::chrono::milliseconds(timeoutMs))) {}
+TimeCheck::TimeCheck(const char *tag, uint32_t timeoutMs)
+    : mEndTimeNs(getTimeCheckThread()->startMonitoring(tag, timeoutMs))
+{
+}
 
 TimeCheck::~TimeCheck() {
-    mTimeCheckHandler->onCancel(mTimerHandle);
+    getTimeCheckThread()->stopMonitoring(mEndTimeNs);
 }
 
-void TimeCheck::TimeCheckHandler::onCancel(TimerThread::Handle timerHandle) const
+TimeCheck::TimeCheckThread::~TimeCheckThread()
 {
-    if (TimeCheck::getTimeCheckThread().cancelTask(timerHandle) && onTimer) {
-        const std::chrono::system_clock::time_point endTime = std::chrono::system_clock::now();
-        onTimer(false /* timeout */,
-                std::chrono::duration_cast<std::chrono::duration<float, std::milli>>(
-                        endTime - startTime).count());
-    }
+    AutoMutex _l(mMutex);
+    requestExit();
+    mMonitorRequests.clear();
+    mCond.signal();
 }
 
-void TimeCheck::TimeCheckHandler::onTimeout() const
+nsecs_t TimeCheck::TimeCheckThread::startMonitoring(const char *tag, uint32_t timeoutMs) {
+    Mutex::Autolock _l(mMutex);
+    nsecs_t endTimeNs = systemTime() + milliseconds(timeoutMs);
+    for (; mMonitorRequests.indexOfKey(endTimeNs) >= 0; ++endTimeNs);
+    mMonitorRequests.add(endTimeNs, tag);
+    mCond.signal();
+    return endTimeNs;
+}
+
+void TimeCheck::TimeCheckThread::stopMonitoring(nsecs_t endTimeNs) {
+    Mutex::Autolock _l(mMutex);
+    mMonitorRequests.removeItem(endTimeNs);
+    mCond.signal();
+}
+
+bool TimeCheck::TimeCheckThread::threadLoop()
 {
-    const std::chrono::system_clock::time_point endTime = std::chrono::system_clock::now();
-    if (onTimer) {
-        onTimer(true /* timeout */,
-                std::chrono::duration_cast<std::chrono::duration<float, std::milli>>(
-                        endTime - startTime).count());
-    }
+    status_t status = TIMED_OUT;
+    {
+        AutoMutex _l(mMutex);
 
-    if (!crashOnTimeout) return;
-
-    // Generate audio HAL processes tombstones and allow time to complete
-    // before forcing restart
-    std::vector<pid_t> pids = TimeCheck::getAudioHalPids();
-    if (pids.size() != 0) {
-        for (const auto& pid : pids) {
-            ALOGI("requesting tombstone for pid: %d", pid);
-            sigqueue(pid, DEBUGGER_SIGNAL, {.sival_int = 0});
+        if (exitPending()) {
+            return false;
         }
-        sleep(1);
-    } else {
-        ALOGI("No HAL process pid available, skipping tombstones");
+
+        nsecs_t endTimeNs = INT64_MAX;
+        const char *tag = "<unspecified>";
+        // KeyedVector mMonitorRequests is ordered so take first entry as next timeout
+        if (mMonitorRequests.size() != 0) {
+            endTimeNs = mMonitorRequests.keyAt(0);
+            tag = mMonitorRequests.valueAt(0);
+        }
+
+        const nsecs_t waitTimeNs = endTimeNs - systemTime();
+        if (waitTimeNs > 0) {
+            status = mCond.waitRelative(mMutex, waitTimeNs);
+        }
+        if (status != NO_ERROR) {
+            // Generate audio HAL processes tombstones and allow time to complete
+            // before forcing restart
+            std::vector<pid_t> pids = getAudioHalPids();
+            if (pids.size() != 0) {
+                for (const auto& pid : pids) {
+                    ALOGI("requesting tombstone for pid: %d", pid);
+                    sigqueue(pid, DEBUGGER_SIGNAL, {.sival_int = 0});
+                }
+                sleep(1);
+            } else {
+                ALOGI("No HAL process pid available, skipping tombstones");
+            }
+            LOG_EVENT_STRING(LOGTAG_AUDIO_BINDER_TIMEOUT, tag);
+            LOG_ALWAYS_FATAL("TimeCheck timeout for %s", tag);
+        }
     }
-    LOG_EVENT_STRING(LOGTAG_AUDIO_BINDER_TIMEOUT, tag.c_str());
-    LOG_ALWAYS_FATAL("TimeCheck timeout for %s on thread %d (start=%s, end=%s)",
-            tag.c_str(), tid, formatTime(startTime).c_str(), formatTime(endTime).c_str());
+    return true;
 }
 
-}  // namespace android::mediautils
+}; // namespace android
