@@ -27,6 +27,7 @@
 #include "Camera3IOStreamBase.h"
 #include "Camera3OutputStreamInterface.h"
 #include "Camera3BufferManager.h"
+#include "PreviewFrameScheduler.h"
 
 namespace android {
 
@@ -88,7 +89,12 @@ class Camera3OutputStream :
             android_dataspace dataSpace, camera_stream_rotation_t rotation,
             nsecs_t timestampOffset, const String8& physicalCameraId,
             const std::unordered_set<int32_t> &sensorPixelModesUsed,
-            int setId = CAMERA3_STREAM_SET_ID_INVALID, bool isMultiResolution = false);
+            int setId = CAMERA3_STREAM_SET_ID_INVALID, bool isMultiResolution = false,
+            int64_t dynamicProfile = ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD,
+            int64_t streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT,
+            bool deviceTimeBaseIsRealtime = false,
+            int timestampBase = OutputConfiguration::TIMESTAMP_BASE_DEFAULT,
+            int mirrorMode = OutputConfiguration::MIRROR_MODE_AUTO);
     /**
      * Set up a stream for formats that have a variable buffer size for the same
      * dimensions, such as compressed JPEG.
@@ -100,7 +106,12 @@ class Camera3OutputStream :
             android_dataspace dataSpace, camera_stream_rotation_t rotation,
             nsecs_t timestampOffset, const String8& physicalCameraId,
             const std::unordered_set<int32_t> &sensorPixelModesUsed,
-            int setId = CAMERA3_STREAM_SET_ID_INVALID, bool isMultiResolution = false);
+            int setId = CAMERA3_STREAM_SET_ID_INVALID, bool isMultiResolution = false,
+            int64_t dynamicProfile = ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD,
+            int64_t streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT,
+            bool deviceTimeBaseIsRealtime = false,
+            int timestampBase = OutputConfiguration::TIMESTAMP_BASE_DEFAULT,
+            int mirrorMode = OutputConfiguration::MIRROR_MODE_AUTO);
     /**
      * Set up a stream with deferred consumer for formats that have 2 dimensions, such as
      * RAW and YUV. The consumer must be set before using this stream for output. A valid
@@ -111,7 +122,12 @@ class Camera3OutputStream :
             camera_stream_rotation_t rotation, nsecs_t timestampOffset,
             const String8& physicalCameraId,
             const std::unordered_set<int32_t> &sensorPixelModesUsed,
-            int setId = CAMERA3_STREAM_SET_ID_INVALID, bool isMultiResolution = false);
+            int setId = CAMERA3_STREAM_SET_ID_INVALID, bool isMultiResolution = false,
+            int64_t dynamicProfile = ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD,
+            int64_t streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT,
+            bool deviceTimeBaseIsRealtime = false,
+            int timestampBase = OutputConfiguration::TIMESTAMP_BASE_DEFAULT,
+            int mirrorMode = OutputConfiguration::MIRROR_MODE_AUTO);
 
     virtual ~Camera3OutputStream();
 
@@ -125,7 +141,7 @@ class Camera3OutputStream :
      * Set the transform on the output stream; one of the
      * HAL_TRANSFORM_* / NATIVE_WINDOW_TRANSFORM_* constants.
      */
-    status_t         setTransform(int transform);
+    status_t         setTransform(int transform, bool mayChangeMirror);
 
     /**
      * Return if this output stream is for video encoding.
@@ -229,6 +245,7 @@ class Camera3OutputStream :
     static void applyZSLUsageQuirk(int format, uint64_t *consumerUsage /*inout*/);
 
     void setImageDumpMask(int mask) { mImageDumpMask = mask; }
+    bool shouldLogError(status_t res);
 
   protected:
     Camera3OutputStream(int id, camera_stream_type_t type,
@@ -237,7 +254,12 @@ class Camera3OutputStream :
             const String8& physicalCameraId,
             const std::unordered_set<int32_t> &sensorPixelModesUsed,
             uint64_t consumerUsage = 0, nsecs_t timestampOffset = 0,
-            int setId = CAMERA3_STREAM_SET_ID_INVALID, bool isMultiResolution = false);
+            int setId = CAMERA3_STREAM_SET_ID_INVALID, bool isMultiResolution = false,
+            int64_t dynamicProfile = ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD,
+            int64_t streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT,
+            bool deviceTimeBaseIsRealtime = false,
+            int timestampBase = OutputConfiguration::TIMESTAMP_BASE_DEFAULT,
+            int mirrorMode = OutputConfiguration::MIRROR_MODE_AUTO);
 
     /**
      * Note that we release the lock briefly in this function
@@ -245,7 +267,9 @@ class Camera3OutputStream :
     virtual status_t returnBufferCheckedLocked(
             const camera_stream_buffer &buffer,
             nsecs_t timestamp,
+            nsecs_t readoutTimestamp,
             bool output,
+            int32_t transform,
             const std::vector<size_t>& surface_ids,
             /*out*/
             sp<Fence> *releaseFenceOut);
@@ -254,7 +278,7 @@ class Camera3OutputStream :
 
     status_t getEndpointUsageForSurface(uint64_t *usage,
             const sp<Surface>& surface) const;
-    status_t configureConsumerQueueLocked();
+    status_t configureConsumerQueueLocked(bool allowPreviewScheduler);
 
     // Consumer as the output of camera HAL
     sp<Surface> mConsumer;
@@ -277,9 +301,6 @@ class Camera3OutputStream :
     // Name of Surface consumer
     String8           mConsumerName;
 
-    // Whether consumer assumes MONOTONIC timestamp
-    bool mUseMonoTimestamp;
-
     /**
      * GraphicBuffer manager this stream is registered to. Used to replace the buffer
      * allocation/deallocation role of BufferQueue.
@@ -298,7 +319,11 @@ class Camera3OutputStream :
     bool mUseBufferManager;
 
     /**
-     * Timestamp offset for video and hardware composer consumed streams
+     * Offset used to override camera HAL produced timestamps
+     *
+     * The offset is first initialized to bootTime - monotonicTime in
+     * constructor, and may later be updated based on the client's timestampBase
+     * setting.
      */
     nsecs_t mTimestampOffset;
 
@@ -322,6 +347,8 @@ class Camera3OutputStream :
     std::vector<Surface::BatchBuffer> mBatchedBuffers;
     // ---- End of mBatchLock protected scope ----
 
+    const int mMirrorMode;
+
     /**
      * Internal Camera3Stream interface
      */
@@ -332,7 +359,8 @@ class Camera3OutputStream :
 
     virtual status_t returnBufferLocked(
             const camera_stream_buffer &buffer,
-            nsecs_t timestamp, const std::vector<size_t>& surface_ids);
+            nsecs_t timestamp, nsecs_t readoutTimestamp,
+            int32_t transform, const std::vector<size_t>& surface_ids);
 
     virtual status_t queueBufferToConsumer(sp<ANativeWindow>& consumer,
             ANativeWindowBuffer* buffer, int anwReleaseFence,
@@ -369,6 +397,8 @@ class Camera3OutputStream :
 
     int mImageDumpMask = 0;
 
+    // The preview stream scheduler for re-timing frames
+    std::unique_ptr<PreviewFrameScheduler> mPreviewFrameScheduler;
 }; // class Camera3OutputStream
 
 } // namespace camera3
