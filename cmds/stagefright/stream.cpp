@@ -42,7 +42,7 @@
 #include <gui/Surface.h>
 
 #include <fcntl.h>
-#include <ui/DisplayMode.h>
+#include <ui/DisplayConfig.h>
 
 using namespace android;
 
@@ -321,10 +321,10 @@ int main(int argc, char **argv) {
     const sp<IBinder> display = SurfaceComposerClient::getInternalDisplayToken();
     CHECK(display != nullptr);
 
-    ui::DisplayMode mode;
-    CHECK_EQ(SurfaceComposerClient::getActiveDisplayMode(display, &mode), NO_ERROR);
+    DisplayConfig config;
+    CHECK_EQ(SurfaceComposerClient::getActiveDisplayConfig(display, &config), NO_ERROR);
 
-    const ui::Size& resolution = mode.resolution;
+    const ui::Size& resolution = config.resolution;
     const ssize_t displayWidth = resolution.getWidth();
     const ssize_t displayHeight = resolution.getHeight();
 

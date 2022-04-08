@@ -45,6 +45,7 @@ public:
     void *callbackLoop() override;
 
 private:
+    AudioStreamInternalPlay  mStreamInternalPlay; // for playing output of mixer
     bool                     mLatencyTuningEnabled = false; // TODO implement tuning
     AAudioMixer              mMixer;    //
 };

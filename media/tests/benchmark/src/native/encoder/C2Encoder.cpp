@@ -68,8 +68,8 @@ int32_t C2Encoder::createCodec2Component(string compName, AMediaFormat *format) 
     }
 
     int64_t sTime = mStats->getCurTime();
-    if (mClient->CreateComponentByName(compName.c_str(), mListener, &mComponent, &mClient) !=
-        C2_OK) {
+    mComponent = mClient->CreateComponentByName(compName.c_str(), mListener, &mClient);
+    if (mComponent == nullptr) {
         ALOGE("Create component failed for %s", compName.c_str());
         return -1;
     }
@@ -251,11 +251,9 @@ void C2Encoder::deInitCodec() {
     mStats->setDeInitTime(timeTaken);
 }
 
-void C2Encoder::dumpStatistics(string inputReference, int64_t durationUs, string componentName,
-                               string statsFile) {
+void C2Encoder::dumpStatistics(string inputReference, int64_t durationUs) {
     string operation = "c2encode";
-    string mode = "async";
-    mStats->dumpStatistics(operation, inputReference, durationUs, componentName, mode, statsFile);
+    mStats->dumpStatistics(operation, inputReference, durationUs);
 }
 
 void C2Encoder::resetEncoder() {

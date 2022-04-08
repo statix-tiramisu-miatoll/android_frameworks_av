@@ -17,8 +17,6 @@
 #ifndef ANDROID_SERVERS_CAMERA_CAMERA2_CALLBACKPROCESSOR_H
 #define ANDROID_SERVERS_CAMERA_CAMERA2_CALLBACKPROCESSOR_H
 
-#include <atomic>
-
 #include <utils/Thread.h>
 #include <utils/String16.h>
 #include <utils/Vector.h>
@@ -54,9 +52,6 @@ class CallbackProcessor:
     status_t deleteStream();
     int getStreamId() const;
 
-    void unpauseCallback();
-    void pauseCallback();
-
     void dump(int fd, const Vector<String16>& args) const;
   private:
     static const nsecs_t kWaitDuration = 10000000; // 10 ms
@@ -71,8 +66,6 @@ class CallbackProcessor:
     enum {
         NO_STREAM = -1
     };
-
-    std::atomic<bool> mCallbackPaused;
 
     // True if mCallbackWindow is a remote consumer, false if just the local
     // mCallbackConsumer

@@ -18,7 +18,6 @@
 #define LOG_TAG "hidl_ClearKeyPlugin"
 #include <utils/Log.h>
 
-#include <chrono>
 #include <stdio.h>
 #include <inttypes.h>
 
@@ -59,7 +58,7 @@ std::vector<uint8_t> uint32ToVector(uint32_t value) {
 namespace android {
 namespace hardware {
 namespace drm {
-namespace V1_4 {
+namespace V1_2 {
 namespace clearkey {
 
 KeyRequestType toKeyRequestType_V1_0(KeyRequestType_V1_1 keyRequestType) {
@@ -582,7 +581,6 @@ Return<Status> DrmPlugin::setPropertyByteArray(
 Return<void> DrmPlugin::queryKeyStatus(
         const hidl_vec<uint8_t>& sessionId,
         queryKeyStatus_cb _hidl_cb) {
-
     if (sessionId.size() == 0) {
         // Returns empty key status KeyValue pair
         _hidl_cb(Status::BAD_VALUE, hidl_vec<KeyValue>());
@@ -592,12 +590,14 @@ Return<void> DrmPlugin::queryKeyStatus(
     std::vector<KeyValue> infoMapVec;
     infoMapVec.clear();
 
+    mPlayPolicyLock.lock();
     KeyValue keyValuePair;
     for (size_t i = 0; i < mPlayPolicy.size(); ++i) {
         keyValuePair.key = mPlayPolicy[i].key;
         keyValuePair.value = mPlayPolicy[i].value;
         infoMapVec.push_back(keyValuePair);
     }
+    mPlayPolicyLock.unlock();
     _hidl_cb(Status::OK, toHidlVec(infoMapVec));
     return Void();
 }
@@ -633,48 +633,6 @@ Return<void> DrmPlugin::getSecurityLevel(const hidl_vec<uint8_t>& sessionId,
 
     _hidl_cb(Status::OK, itr->second);
     return Void();
-}
-
-Return<void> DrmPlugin::getLogMessages(
-        getLogMessages_cb _hidl_cb) {
-    using std::chrono::duration_cast;
-    using std::chrono::milliseconds;
-    using std::chrono::system_clock;
-
-    auto timeMillis = duration_cast<milliseconds>(
-            system_clock::now().time_since_epoch()).count();
-
-    std::vector<LogMessage> logs = {
-            { timeMillis, LogPriority::ERROR, std::string("Not implemented") }};
-    _hidl_cb(drm::V1_4::Status::OK, toHidlVec(logs));
-    return Void();
-}
-
-Return<bool> DrmPlugin::requiresSecureDecoder(
-        const hidl_string& mime, SecurityLevel level) {
-    UNUSED(mime);
-    UNUSED(level);
-    return false;
-}
-
-Return<bool> DrmPlugin::requiresSecureDecoderDefault(const hidl_string& mime) {
-    UNUSED(mime);
-    // Clearkey only supports SW_SECURE_CRYPTO, so we always returns false
-    // regardless of mime type.
-    return false;
-}
-
-Return<Status> DrmPlugin::setPlaybackId(
-    const hidl_vec<uint8_t>& sessionId,
-    const hidl_string& playbackId) {
-    if (sessionId.size() == 0) {
-        ALOGE("Invalid empty session id");
-        return Status::BAD_VALUE;
-    }
-
-    std::vector<uint8_t> sid = toVector(sessionId);
-    mPlaybackId[sid] = playbackId;
-    return Status::OK;
 }
 
 Return<Status> DrmPlugin::setSecurityLevel(const hidl_vec<uint8_t>& sessionId,
@@ -744,25 +702,9 @@ Return<void> DrmPlugin::getMetrics(getMetrics_cb _hidl_cb) {
       "close_session", { closeSessionNotOpenedAttribute }, { closeSessionNotOpenedMetricValue }
     };
 
-    // Set the setPlaybackId metric.
-    std::vector<DrmMetricGroup::Attribute> sids;
-    std::vector<DrmMetricGroup::Value> playbackIds;
-    for (const auto&[key, value] : mPlaybackId) {
-        std::string sid(key.begin(), key.end());
-        DrmMetricGroup::Attribute sessionIdAttribute = {
-            "sid", DrmMetricGroup::ValueType::STRING_TYPE, 0, 0, sid };
-        sids.push_back(sessionIdAttribute);
+    DrmMetricGroup metrics = { { openSessionMetric, closeSessionMetric,
+                                closeSessionNotOpenedMetric } };
 
-        DrmMetricGroup::Value playbackIdMetricValue = {
-            "playbackId", DrmMetricGroup::ValueType::STRING_TYPE, 0, 0, value };
-        playbackIds.push_back(playbackIdMetricValue);
-    }
-    DrmMetricGroup::Metric setPlaybackIdMetric = {
-            "set_playback_id", { sids }, { playbackIds }};
-
-    DrmMetricGroup metrics = {
-            { openSessionMetric, closeSessionMetric,
-              closeSessionNotOpenedMetric, setPlaybackIdMetric }};
     _hidl_cb(Status::OK, hidl_vec<DrmMetricGroup>({metrics}));
     return Void();
 }
@@ -965,7 +907,7 @@ Return<Status> DrmPlugin::removeAllSecureStops() {
 }
 
 }  // namespace clearkey
-}  // namespace V1_4
+}  // namespace V1_2
 }  // namespace drm
 }  // namespace hardware
 }  // namespace android

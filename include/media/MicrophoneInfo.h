@@ -17,24 +17,33 @@
 #ifndef ANDROID_MICROPHONE_INFO_H
 #define ANDROID_MICROPHONE_INFO_H
 
-#include <android/media/MicrophoneInfoData.h>
 #include <binder/Parcel.h>
 #include <binder/Parcelable.h>
-#include <media/AidlConversionUtil.h>
 #include <system/audio.h>
+#include <utils/String16.h>
+#include <utils/Vector.h>
 
 namespace android {
 namespace media {
+
+#define RETURN_IF_FAILED(calledOnce)                                     \
+    {                                                                    \
+        status_t returnStatus = calledOnce;                              \
+        if (returnStatus) {                                              \
+            ALOGE("Failed at %s:%d (%s)", __FILE__, __LINE__, __func__); \
+            return returnStatus;                                         \
+         }                                                               \
+    }
 
 class MicrophoneInfo : public Parcelable {
 public:
     MicrophoneInfo() = default;
     MicrophoneInfo(const MicrophoneInfo& microphoneInfo) = default;
     MicrophoneInfo(audio_microphone_characteristic_t& characteristic) {
-        mDeviceId = std::string(&characteristic.device_id[0]);
+        mDeviceId = String16(&characteristic.device_id[0]);
         mPortId = characteristic.id;
         mType = characteristic.device;
-        mAddress = std::string(&characteristic.address[0]);
+        mAddress = String16(&characteristic.address[0]);
         mDeviceLocation = characteristic.location;
         mDeviceGroup = characteristic.group;
         mIndexInTheGroup = characteristic.index_in_the_group;
@@ -44,8 +53,8 @@ public:
         mOrientation.push_back(characteristic.orientation.x);
         mOrientation.push_back(characteristic.orientation.y);
         mOrientation.push_back(characteristic.orientation.z);
-        std::vector<float> frequencies;
-        std::vector<float> responses;
+        Vector<float> frequencies;
+        Vector<float> responses;
         for (size_t i = 0; i < characteristic.num_frequency_responses; i++) {
             frequencies.push_back(characteristic.frequency_responses[0][i]);
             responses.push_back(characteristic.frequency_responses[1][i]);
@@ -64,73 +73,76 @@ public:
     virtual ~MicrophoneInfo() = default;
 
     virtual status_t writeToParcel(Parcel* parcel) const {
-        MicrophoneInfoData parcelable;
-        return writeToParcelable(&parcelable)
-               ?: parcelable.writeToParcel(parcel);
-    }
-
-    virtual status_t writeToParcelable(MicrophoneInfoData* parcelable) const {
-        parcelable->deviceId = mDeviceId;
-        parcelable->portId = mPortId;
-        parcelable->type = VALUE_OR_RETURN_STATUS(convertReinterpret<int32_t>(mType));
-        parcelable->address = mAddress;
-        parcelable->deviceGroup = mDeviceGroup;
-        parcelable->indexInTheGroup = mIndexInTheGroup;
-        parcelable->geometricLocation = mGeometricLocation;
-        parcelable->orientation = mOrientation;
+        RETURN_IF_FAILED(parcel->writeString16(mDeviceId));
+        RETURN_IF_FAILED(parcel->writeInt32(mPortId));
+        RETURN_IF_FAILED(parcel->writeUint32(mType));
+        RETURN_IF_FAILED(parcel->writeString16(mAddress));
+        RETURN_IF_FAILED(parcel->writeInt32(mDeviceLocation));
+        RETURN_IF_FAILED(parcel->writeInt32(mDeviceGroup));
+        RETURN_IF_FAILED(parcel->writeInt32(mIndexInTheGroup));
+        RETURN_IF_FAILED(writeFloatVector(parcel, mGeometricLocation));
+        RETURN_IF_FAILED(writeFloatVector(parcel, mOrientation));
         if (mFrequencyResponses.size() != 2) {
             return BAD_VALUE;
         }
-        parcelable->frequencies = mFrequencyResponses[0];
-        parcelable->frequencyResponses = mFrequencyResponses[1];
-        parcelable->channelMapping = mChannelMapping;
-        parcelable->sensitivity = mSensitivity;
-        parcelable->maxSpl = mMaxSpl;
-        parcelable->minSpl = mMinSpl;
-        parcelable->directionality = mDirectionality;
+        for (size_t i = 0; i < mFrequencyResponses.size(); i++) {
+            RETURN_IF_FAILED(parcel->writeInt32(mFrequencyResponses[i].size()));
+            RETURN_IF_FAILED(writeFloatVector(parcel, mFrequencyResponses[i]));
+        }
+        std::vector<int> channelMapping;
+        for (size_t i = 0; i < mChannelMapping.size(); ++i) {
+            channelMapping.push_back(mChannelMapping[i]);
+        }
+        RETURN_IF_FAILED(parcel->writeInt32Vector(channelMapping));
+        RETURN_IF_FAILED(parcel->writeFloat(mSensitivity));
+        RETURN_IF_FAILED(parcel->writeFloat(mMaxSpl));
+        RETURN_IF_FAILED(parcel->writeFloat(mMinSpl));
+        RETURN_IF_FAILED(parcel->writeInt32(mDirectionality));
         return OK;
     }
 
     virtual status_t readFromParcel(const Parcel* parcel) {
-        MicrophoneInfoData data;
-        return data.readFromParcel(parcel)
-            ?: readFromParcelable(data);
-    }
-
-    virtual status_t readFromParcelable(const MicrophoneInfoData& parcelable) {
-        mDeviceId = parcelable.deviceId;
-        mPortId = parcelable.portId;
-        mType = VALUE_OR_RETURN_STATUS(convertReinterpret<uint32_t>(parcelable.type));
-        mAddress = parcelable.address;
-        mDeviceLocation = parcelable.deviceLocation;
-        mDeviceGroup = parcelable.deviceGroup;
-        mIndexInTheGroup = parcelable.indexInTheGroup;
-        if (parcelable.geometricLocation.size() != 3) {
+        RETURN_IF_FAILED(parcel->readString16(&mDeviceId));
+        RETURN_IF_FAILED(parcel->readInt32(&mPortId));
+        RETURN_IF_FAILED(parcel->readUint32(&mType));
+        RETURN_IF_FAILED(parcel->readString16(&mAddress));
+        RETURN_IF_FAILED(parcel->readInt32(&mDeviceLocation));
+        RETURN_IF_FAILED(parcel->readInt32(&mDeviceGroup));
+        RETURN_IF_FAILED(parcel->readInt32(&mIndexInTheGroup));
+        RETURN_IF_FAILED(readFloatVector(parcel, &mGeometricLocation, 3));
+        RETURN_IF_FAILED(readFloatVector(parcel, &mOrientation, 3));
+        int32_t frequenciesNum;
+        RETURN_IF_FAILED(parcel->readInt32(&frequenciesNum));
+        Vector<float> frequencies;
+        RETURN_IF_FAILED(readFloatVector(parcel, &frequencies, frequenciesNum));
+        int32_t responsesNum;
+        RETURN_IF_FAILED(parcel->readInt32(&responsesNum));
+        Vector<float> responses;
+        RETURN_IF_FAILED(readFloatVector(parcel, &responses, responsesNum));
+        if (frequencies.size() != responses.size()) {
             return BAD_VALUE;
         }
-        mGeometricLocation = parcelable.geometricLocation;
-        if (parcelable.orientation.size() != 3) {
+        mFrequencyResponses.push_back(frequencies);
+        mFrequencyResponses.push_back(responses);
+        std::vector<int> channelMapping;
+        status_t result = parcel->readInt32Vector(&channelMapping);
+        if (result != OK) {
+            return result;
+        }
+        if (channelMapping.size() != AUDIO_CHANNEL_COUNT_MAX) {
             return BAD_VALUE;
         }
-        mOrientation = parcelable.orientation;
-        if (parcelable.frequencies.size() != parcelable.frequencyResponses.size()) {
-            return BAD_VALUE;
+        for (size_t i = 0; i < channelMapping.size(); i++) {
+            mChannelMapping.push_back(channelMapping[i]);
         }
-
-        mFrequencyResponses.push_back(parcelable.frequencies);
-        mFrequencyResponses.push_back(parcelable.frequencyResponses);
-        if (parcelable.channelMapping.size() != AUDIO_CHANNEL_COUNT_MAX) {
-            return BAD_VALUE;
-        }
-        mChannelMapping = parcelable.channelMapping;
-        mSensitivity = parcelable.sensitivity;
-        mMaxSpl = parcelable.maxSpl;
-        mMinSpl = parcelable.minSpl;
-        mDirectionality = parcelable.directionality;
+        RETURN_IF_FAILED(parcel->readFloat(&mSensitivity));
+        RETURN_IF_FAILED(parcel->readFloat(&mMaxSpl));
+        RETURN_IF_FAILED(parcel->readFloat(&mMinSpl));
+        RETURN_IF_FAILED(parcel->readInt32(&mDirectionality));
         return OK;
     }
 
-    std::string getDeviceId() const {
+    String16 getDeviceId() const {
         return mDeviceId;
     }
 
@@ -142,7 +154,7 @@ public:
         return mType;
     }
 
-    std::string getAddress() const {
+    String16 getAddress() const {
         return mAddress;
     }
 
@@ -158,19 +170,19 @@ public:
         return mIndexInTheGroup;
     }
 
-    const std::vector<float>& getGeometricLocation() const {
+    const Vector<float>& getGeometricLocation() const {
         return mGeometricLocation;
     }
 
-    const std::vector<float>& getOrientation() const {
+    const Vector<float>& getOrientation() const {
         return mOrientation;
     }
 
-    const std::vector<std::vector<float>>& getFrequencyResponses() const {
+    const Vector<Vector<float>>& getFrequencyResponses() const {
         return mFrequencyResponses;
     }
 
-    const std::vector<int>& getChannelMapping() const {
+    const Vector<int>& getChannelMapping() const {
         return mChannelMapping;
     }
 
@@ -191,37 +203,45 @@ public:
     }
 
 private:
-    std::string mDeviceId;
+    status_t readFloatVector(
+            const Parcel* parcel, Vector<float> *vectorPtr, size_t defaultLength) {
+        std::unique_ptr<std::vector<float>> v;
+        status_t result = parcel->readFloatVector(&v);
+        if (result != OK) return result;
+        vectorPtr->clear();
+        if (v.get() != nullptr) {
+            for (const auto& iter : *v) {
+                vectorPtr->push_back(iter);
+            }
+        } else {
+            vectorPtr->resize(defaultLength);
+        }
+        return OK;
+    }
+    status_t writeFloatVector(Parcel* parcel, const Vector<float>& vector) const {
+        std::vector<float> v;
+        for (size_t i = 0; i < vector.size(); i++) {
+            v.push_back(vector[i]);
+        }
+        return parcel->writeFloatVector(v);
+    }
+
+    String16 mDeviceId;
     int32_t mPortId;
     uint32_t mType;
-    std::string mAddress;
+    String16 mAddress;
     int32_t mDeviceLocation;
     int32_t mDeviceGroup;
     int32_t mIndexInTheGroup;
-    std::vector<float> mGeometricLocation;
-    std::vector<float> mOrientation;
-    std::vector<std::vector<float>> mFrequencyResponses;
-    std::vector<int> mChannelMapping;
+    Vector<float> mGeometricLocation;
+    Vector<float> mOrientation;
+    Vector<Vector<float>> mFrequencyResponses;
+    Vector<int> mChannelMapping;
     float mSensitivity;
     float mMaxSpl;
     float mMinSpl;
     int32_t mDirectionality;
 };
-
-// Conversion routines, according to AidlConversion.h conventions.
-inline ConversionResult<MicrophoneInfo>
-aidl2legacy_MicrophoneInfo(const media::MicrophoneInfoData& aidl) {
-    MicrophoneInfo legacy;
-    RETURN_IF_ERROR(legacy.readFromParcelable(aidl));
-    return legacy;
-}
-
-inline ConversionResult<media::MicrophoneInfoData>
-legacy2aidl_MicrophoneInfo(const MicrophoneInfo& legacy) {
-    media::MicrophoneInfoData aidl;
-    RETURN_IF_ERROR(legacy.writeToParcelable(&aidl));
-    return aidl;
-}
 
 } // namespace media
 } // namespace android

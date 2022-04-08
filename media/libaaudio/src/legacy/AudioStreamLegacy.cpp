@@ -34,7 +34,8 @@ using namespace android;
 using namespace aaudio;
 
 AudioStreamLegacy::AudioStreamLegacy()
-        : AudioStream() {
+        : AudioStream()
+        , mDeviceCallback(new StreamDeviceCallback(this)) {
 }
 
 AudioStreamLegacy::~AudioStreamLegacy() {
@@ -94,15 +95,10 @@ void AudioStreamLegacy::processCallbackCommon(aaudio_callback_operation_t opcode
             AudioTrack::Buffer *audioBuffer = static_cast<AudioTrack::Buffer *>(info);
             if (getState() == AAUDIO_STREAM_STATE_DISCONNECTED) {
                 ALOGW("processCallbackCommon() data, stream disconnected");
-                // This will kill the stream and prevent it from being restarted.
-                // That is OK because the stream is disconnected.
                 audioBuffer->size = SIZE_STOP_CALLBACKS;
             } else if (!mCallbackEnabled.load()) {
-                ALOGW("processCallbackCommon() no data because callback disabled, set size=0");
-                // Do NOT use SIZE_STOP_CALLBACKS here because that will kill the stream and
-                // prevent it from being restarted. This can occur because of a race condition
-                // caused by Legacy callbacks running after the track is "stopped".
-                audioBuffer->size = 0;
+                ALOGW("processCallbackCommon() no data because callback disabled");
+                audioBuffer->size = SIZE_STOP_CALLBACKS;
             } else {
                 if (audioBuffer->frameCount == 0) {
                     ALOGW("processCallbackCommon() data, frameCount is zero");
@@ -129,7 +125,7 @@ void AudioStreamLegacy::processCallbackCommon(aaudio_callback_operation_t opcode
                               __func__, callbackResult);
                     }
                     audioBuffer->size = 0;
-                    systemStopInternal();
+                    systemStopFromCallback();
                     // Disable the callback just in case the system keeps trying to call us.
                     mCallbackEnabled.store(false);
                 }
@@ -167,11 +163,7 @@ aaudio_result_t AudioStreamLegacy::checkForDisconnectRequest(bool errorCallbackE
 }
 
 void AudioStreamLegacy::forceDisconnect(bool errorCallbackEnabled) {
-    // There is no need to disconnect if already in these states.
-    if (getState() != AAUDIO_STREAM_STATE_DISCONNECTED
-            && getState() != AAUDIO_STREAM_STATE_CLOSING
-            && getState() != AAUDIO_STREAM_STATE_CLOSED
-            ) {
+    if (getState() != AAUDIO_STREAM_STATE_DISCONNECTED) {
         setState(AAUDIO_STREAM_STATE_DISCONNECTED);
         if (errorCallbackEnabled) {
             maybeCallErrorCallback(AAUDIO_ERROR_DISCONNECTED);
@@ -213,30 +205,24 @@ aaudio_result_t AudioStreamLegacy::getBestTimestamp(clockid_t clockId,
     return AAudioConvert_androidToAAudioResult(status);
 }
 
-void AudioStreamLegacy::onAudioDeviceUpdate(audio_io_handle_t /* audioIo */,
-            audio_port_handle_t deviceId) {
+void AudioStreamLegacy::onAudioDeviceUpdate(audio_port_handle_t deviceId)
+{
     // Device routing is a common source of errors and DISCONNECTS.
-    // Please leave this log in place. If there is a bug then this might
-    // get called after the stream has been deleted so log before we
-    // touch the stream object.
-    ALOGD("%s(deviceId = %d)", __func__, (int)deviceId);
-    if (getDeviceId() != AAUDIO_UNSPECIFIED
-            && getDeviceId() != deviceId
-            && getState() != AAUDIO_STREAM_STATE_DISCONNECTED
-            ) {
+    // Please leave this log in place.
+    ALOGD("%s() devId %d => %d", __func__, (int) getDeviceId(), (int)deviceId);
+    if (getDeviceId() != AAUDIO_UNSPECIFIED && getDeviceId() != deviceId &&
+            getState() != AAUDIO_STREAM_STATE_DISCONNECTED) {
         // Note that isDataCallbackActive() is affected by state so call it before DISCONNECTING.
         // If we have a data callback and the stream is active, then ask the data callback
         // to DISCONNECT and call the error callback.
         if (isDataCallbackActive()) {
-            ALOGD("%s() request DISCONNECT in data callback, device %d => %d",
-                  __func__, (int) getDeviceId(), (int) deviceId);
+            ALOGD("onAudioDeviceUpdate() request DISCONNECT in data callback due to device change");
             // If the stream is stopped before the data callback has a chance to handle the
-            // request then the requestStop_l() and requestPause() methods will handle it after
+            // request then the requestStop() and requestPause() methods will handle it after
             // the callback has stopped.
             mRequestDisconnect.request();
         } else {
-            ALOGD("%s() DISCONNECT the stream now, device %d => %d",
-                  __func__, (int) getDeviceId(), (int) deviceId);
+            ALOGD("onAudioDeviceUpdate() DISCONNECT the stream now");
             forceDisconnect();
         }
     }

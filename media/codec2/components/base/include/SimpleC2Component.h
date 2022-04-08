@@ -140,7 +140,13 @@ protected:
 
 
     std::shared_ptr<C2Buffer> createLinearBuffer(
+            const std::shared_ptr<C2LinearBlock> &block);
+
+    std::shared_ptr<C2Buffer> createLinearBuffer(
             const std::shared_ptr<C2LinearBlock> &block, size_t offset, size_t size);
+
+    std::shared_ptr<C2Buffer> createGraphicBuffer(
+            const std::shared_ptr<C2GraphicBlock> &block);
 
     std::shared_ptr<C2Buffer> createGraphicBuffer(
             const std::shared_ptr<C2GraphicBlock> &block,

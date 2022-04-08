@@ -27,13 +27,13 @@
 #include <variant>
 
 #include <binder/Parcel.h>
+#include <log/log.h>
 #include <utils/Errors.h>
 #include <utils/Timers.h> // nsecs_t
 
 namespace android {
 
-namespace media { class IMediaMetricsService; }
-
+class IMediaMetricsService;
 class Parcel;
 
 /*
@@ -240,10 +240,7 @@ class BaseItem {
 public:
     // are we collecting metrics data
     static bool isEnabled();
-    // returns the MediaMetrics service if active.
-    static sp<media::IMediaMetricsService> getService();
-    // submits a raw buffer directly to the MediaMetrics service - this is highly optimized.
-    static status_t submitBuffer(const char *buffer, size_t len);
+    static sp<IMediaMetricsService> getService();
 
 protected:
     static constexpr const char * const EnabledProperty = "media.metrics.enabled";
@@ -251,9 +248,10 @@ protected:
     static const int EnabledProperty_default = 1;
 
     // let's reuse a binder connection
-    static sp<media::IMediaMetricsService> sMediaMetricsService;
+    static sp<IMediaMetricsService> sMediaMetricsService;
 
     static void dropInstance();
+    static bool submitBuffer(const char *buffer, size_t len);
 
     template <typename T>
     struct is_item_type {
@@ -469,16 +467,16 @@ protected:
     template <> // static
     status_t extract(std::string *val, const char **bufferpptr, const char *bufferptrmax) {
         const char *ptr = *bufferpptr;
-        while (*ptr != 0) {
+        do {
             if (ptr >= bufferptrmax) {
                 ALOGE("%s: buffer exceeded", __func__);
+                android_errorWriteLog(0x534e4554, "204445255");
                 return BAD_VALUE;
             }
-            ++ptr;
-        }
-        const size_t size = (ptr - *bufferpptr) + 1;
+        } while (*ptr++ != 0);
+        // ptr is terminator+1, == bufferptrmax if we finished entire buffer
         *val = *bufferpptr;
-        *bufferpptr += size;
+        *bufferpptr = ptr;
         return NO_ERROR;
     }
     template <> // static
@@ -576,7 +574,7 @@ public:
 
     bool record() {
         return updateHeader()
-                && BaseItem::submitBuffer(getBuffer(), getLength()) == OK;
+                && BaseItem::submitBuffer(getBuffer(), getLength());
     }
 
     bool isValid () const {

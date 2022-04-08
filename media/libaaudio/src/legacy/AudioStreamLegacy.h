@@ -87,13 +87,29 @@ public:
 
 protected:
 
+    class StreamDeviceCallback : public android::AudioSystem::AudioDeviceCallback
+    {
+    public:
+
+        StreamDeviceCallback(AudioStreamLegacy *parent) : mParent(parent) {}
+        virtual ~StreamDeviceCallback() {}
+
+        virtual void onAudioDeviceUpdate(audio_io_handle_t audioIo __unused,
+                                         audio_port_handle_t deviceId) {
+            if (mParent != nullptr) {
+                mParent->onAudioDeviceUpdate(deviceId);
+            }
+        }
+
+        AudioStreamLegacy *mParent;
+    };
+
     aaudio_result_t getBestTimestamp(clockid_t clockId,
                                      int64_t *framePosition,
                                      int64_t *timeNanoseconds,
                                      android::ExtendedTimestamp *extendedTimestamp);
 
-    void onAudioDeviceUpdate(audio_io_handle_t audioIo,
-            audio_port_handle_t deviceId) override;
+    void onAudioDeviceUpdate(audio_port_handle_t deviceId);
 
     /*
      * Check to see whether a callback thread has requested a disconnected.
@@ -112,18 +128,6 @@ protected:
         return mFramesRead.increment(frames);
     }
 
-    /**
-     * Get the framesPerBurst from the underlying API.
-     * @return framesPerBurst
-     */
-    virtual int32_t getFramesPerBurstFromDevice() const = 0;
-
-    /**
-     * Get the bufferCapacity from the underlying API.
-     * @return bufferCapacity in frames
-     */
-    virtual int32_t getBufferCapacityFromDevice() const = 0;
-
     // This is used for exact matching by MediaMetrics. So do not change it.
     // MediaMetricsConstants.h: AMEDIAMETRICS_PROP_CALLERNAME_VALUE_AAUDIO
     static constexpr char     kCallerName[] = "aaudio";
@@ -136,6 +140,7 @@ protected:
     int32_t                    mBlockAdapterBytesPerFrame = 0;
     aaudio_wrapping_frames_t   mPositionWhenStarting = 0;
     int32_t                    mCallbackBufferSize = 0;
+    const android::sp<StreamDeviceCallback>   mDeviceCallback;
 
     AtomicRequestor            mRequestDisconnect;
 

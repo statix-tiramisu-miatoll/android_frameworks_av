@@ -45,6 +45,8 @@
 
 __BEGIN_DECLS
 
+#if __ANDROID_API__ >= 24
+
 /**
  * ACameraCaptureSession is an opaque type that manages frame captures of a camera device.
  *
@@ -61,10 +63,6 @@ typedef struct ACameraCaptureSession ACameraCaptureSession;
  */
 typedef void (*ACameraCaptureSession_stateCallback)(void* context, ACameraCaptureSession *session);
 
-/**
- * Capture session state callbacks used in {@link ACameraDevice_createCaptureSession} and
- * {@link ACameraDevice_createCaptureSessionWithSessionParameters}
- */
 typedef struct ACameraCaptureSession_stateCallbacks {
     /// optional application context.
     void*                               context;
@@ -250,10 +248,6 @@ typedef void (*ACameraCaptureSession_captureCallback_bufferLost)(
         void* context, ACameraCaptureSession* session,
         ACaptureRequest* request, ACameraWindowType* window, int64_t frameNumber);
 
-/**
- * ACaptureCaptureSession_captureCallbacks structure used in
- * {@link ACameraCaptureSession_capture} and {@link ACameraCaptureSession_setRepeatingRequest}.
- */
 typedef struct ACameraCaptureSession_captureCallbacks {
     /// optional application context.
     void*                                               context;
@@ -421,10 +415,7 @@ enum {
  */
 void ACameraCaptureSession_close(ACameraCaptureSession* session);
 
-/**
- * ACameraDevice is opaque type that provides access to a camera device.
- * A pointer can be obtained using {@link ACameraManager_openCamera} method.
- */
+struct ACameraDevice;
 typedef struct ACameraDevice ACameraDevice;
 
 /**
@@ -602,10 +593,10 @@ camera_status_t ACameraCaptureSession_stopRepeating(ACameraCaptureSession* sessi
 camera_status_t ACameraCaptureSession_abortCaptures(ACameraCaptureSession* session)
         __INTRODUCED_IN(24);
 
-/**
- * Opaque object for capture session output, use {@link ACaptureSessionOutput_create} or
- * {@link ACaptureSessionSharedOutput_create} to create an instance.
- */
+#endif /* __ANDROID_API__ >= 24 */
+
+#if __ANDROID_API__ >= 28
+
 typedef struct ACaptureSessionOutput ACaptureSessionOutput;
 
 /**
@@ -619,9 +610,9 @@ typedef struct ACaptureSessionOutput ACaptureSessionOutput;
  *
  * <p>Native windows that get removed must not be part of any active repeating or single/burst
  * request or have any pending results. Consider updating repeating requests via
- * {@link ACameraCaptureSession_setRepeatingRequest} and then wait for the last frame number
+ * {@link ACaptureSessionOutput_setRepeatingRequest} and then wait for the last frame number
  * when the sequence completes
- * {@link ACameraCaptureSession_captureCallbacks#onCaptureSequenceCompleted}.</p>
+ * {@link ACameraCaptureSession_captureCallback#onCaptureSequenceCompleted}.</p>
  *
  * <p>Native windows that get added must not be part of any other registered ACaptureSessionOutput
  * and must be compatible. Compatible windows must have matching format, rotation and
@@ -650,7 +641,9 @@ typedef struct ACaptureSessionOutput ACaptureSessionOutput;
  */
 camera_status_t ACameraCaptureSession_updateSharedOutput(ACameraCaptureSession* session,
         ACaptureSessionOutput* output) __INTRODUCED_IN(28);
+#endif /* __ANDROID_API__ >= 28 */
 
+#if __ANDROID_API__ >= 29
 /**
  * The definition of final capture result callback with logical multi-camera support.
  *
@@ -728,15 +721,7 @@ typedef struct ACameraCaptureSession_logicalCamera_captureCallbacks {
      * Same as ACameraCaptureSession_captureCallbacks
      */
     void*                                               context;
-
-    /**
-     * Same as {@link ACameraCaptureSession_captureCallbacks#onCaptureStarted}.
-     */
     ACameraCaptureSession_captureCallback_start         onCaptureStarted;
-
-    /**
-     * Same as {@link ACameraCaptureSession_captureCallbacks#onCaptureProgressed}.
-     */
     ACameraCaptureSession_captureCallback_result        onCaptureProgressed;
 
     /**
@@ -774,18 +759,10 @@ typedef struct ACameraCaptureSession_logicalCamera_captureCallbacks {
     ACameraCaptureSession_logicalCamera_captureCallback_failed onLogicalCameraCaptureFailed;
 
     /**
-     * Same as {@link ACameraCaptureSession_captureCallbacks#onCaptureSequenceCompleted}.
+     * Same as ACameraCaptureSession_captureCallbacks
      */
     ACameraCaptureSession_captureCallback_sequenceEnd   onCaptureSequenceCompleted;
-
-    /**
-     * Same as {@link ACameraCaptureSession_captureCallbacks#onCaptureSequenceAborted}.
-     */
     ACameraCaptureSession_captureCallback_sequenceAbort onCaptureSequenceAborted;
-
-    /**
-     * Same as {@link ACameraCaptureSession_captureCallbacks#onCaptureBufferLost}.
-     */
     ACameraCaptureSession_captureCallback_bufferLost    onCaptureBufferLost;
 } ACameraCaptureSession_logicalCamera_captureCallbacks;
 
@@ -810,6 +787,8 @@ camera_status_t ACameraCaptureSession_logicalCamera_setRepeatingRequest(
         /*optional*/ACameraCaptureSession_logicalCamera_captureCallbacks* callbacks,
         int numRequests, ACaptureRequest** requests,
         /*optional*/int* captureSequenceId) __INTRODUCED_IN(29);
+
+#endif /* __ANDROID_API__ >= 29 */
 
 __END_DECLS
 

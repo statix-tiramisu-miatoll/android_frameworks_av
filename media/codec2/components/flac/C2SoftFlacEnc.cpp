@@ -262,10 +262,9 @@ void C2SoftFlacEnc::process(
         work->result = C2_NO_MEMORY;
         return;
     }
-
-    err = mOutputBlock->map().get().error();
-    if (err) {
-        ALOGE("write view map failed %d", err);
+    C2WriteView wView = mOutputBlock->map().get();
+    if (wView.error()) {
+        ALOGE("write view map failed %d", wView.error());
         work->result = C2_CORRUPTED;
         return;
     }
@@ -482,13 +481,11 @@ private:
 
 }  // namespace android
 
-__attribute__((cfi_canonical_jump_table))
 extern "C" ::C2ComponentFactory* CreateCodec2Factory() {
     ALOGV("in %s", __func__);
     return new ::android::C2SoftFlacEncFactory();
 }
 
-__attribute__((cfi_canonical_jump_table))
 extern "C" void DestroyCodec2Factory(::C2ComponentFactory* factory) {
     ALOGV("in %s", __func__);
     delete factory;

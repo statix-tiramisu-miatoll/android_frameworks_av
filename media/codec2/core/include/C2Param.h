@@ -317,8 +317,7 @@ public:
         DEFINE_FIELD_BASED_COMPARISON_OPERATORS(Index, mIndex)
 
     private:
-        friend class C2InfoBuffer;       // for convertTo*
-        friend struct C2Param;           // for setStream, MakeStreamId, isValid, convertTo*
+        friend struct C2Param;           // for setStream, MakeStreamId, isValid
         friend struct _C2ParamInspector; // for testing
 
         /**
@@ -507,14 +506,6 @@ protected:
     /// sets the port (direction). Returns true iff successful.
     inline bool setPort(bool output) {
         return _mIndex.setPort(output);
-    }
-
-    /// sets the size of this parameter.
-    inline void setSize(size_t size) {
-        if (size < sizeof(C2Param)) {
-            size = 0;
-        }
-        _mSize = c2_min(size, _mSize);
     }
 
 public:

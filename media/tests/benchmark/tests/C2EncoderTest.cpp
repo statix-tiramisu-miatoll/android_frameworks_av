@@ -108,7 +108,7 @@ TEST_P(C2EncoderTest, Codec2Encode) {
         }
 
         string decName = "";
-        string outputFileName = "/data/local/tmp/decode.out";
+        string outputFileName = "decode.out";
         FILE *outFp = fopen(outputFileName.c_str(), "wb");
         ASSERT_NE(outFp, nullptr) << "Unable to open output file" << outputFileName
                                   << " for dumping decoder's output";
@@ -140,8 +140,7 @@ TEST_P(C2EncoderTest, Codec2Encode) {
                 mEncoder->deInitCodec();
                 int64_t durationUs = extractor->getClipDuration();
                 ALOGV("codec : %s", codecName.c_str());
-                mEncoder->dumpStatistics(GetParam().first, durationUs, codecName,
-                                         gEnv->getStatsFile());
+                mEncoder->dumpStatistics(GetParam().first, durationUs);
                 mEncoder->resetEncoder();
             }
         }
@@ -181,9 +180,6 @@ int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     int status = gEnv->initFromOptions(argc, argv);
     if (status == 0) {
-        gEnv->setStatsFile("C2Encoder.csv");
-        status = gEnv->writeStatsHeader();
-        ALOGV("Stats file = %d\n", status);
         status = RUN_ALL_TESTS();
         ALOGV("C2 Encoder Test result = %d\n", status);
     }

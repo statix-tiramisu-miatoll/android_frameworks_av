@@ -23,6 +23,7 @@
 #include "client/AudioStreamInternal.h"
 
 using android::sp;
+using android::IAAudioService;
 
 namespace aaudio {
 
@@ -45,7 +46,7 @@ public:
     }
 protected:
 
-    void advanceClientToMatchServerPosition(int32_t serverOffset = 0) override;
+    void advanceClientToMatchServerPosition() override;
 
 /**
  * Low level data processing that will not block. It will just read or write as much as it can.

@@ -40,32 +40,13 @@ using ::android::hardware::Void;
 
 using namespace ::std::chrono;
 
-using TestParameters = std::tuple<std::string, std::string>;
-static std::vector<TestParameters> gTestParameters;
-
-// Resource directory
-extern std::string sResourceDir;
-
-// Component name prefix
-extern std::string sComponentNamePrefix;
+static std::vector<std::tuple<std::string, std::string>> kTestParameters;
 
 struct FrameInfo {
     int bytesCount;
     uint32_t flags;
     int64_t timestamp;
 };
-
-template <typename... T>
-static inline std::string PrintInstanceTupleNameToString(
-        const testing::TestParamInfo<std::tuple<T...>>& info) {
-    std::stringstream ss;
-    std::apply([&ss](auto&&... elems) { ((ss << elems << '_'), ...); }, info.param);
-    ss << info.index;
-    std::string param_string = ss.str();
-    auto isNotAlphaNum = [](char c) { return !std::isalnum(c); };
-    std::replace_if(param_string.begin(), param_string.end(), isNotAlphaNum, '_');
-    return param_string;
-}
 
 /*
  * Handle Callback functions onWorkDone(), onTripped(),
@@ -124,15 +105,13 @@ struct CodecListener : public android::Codec2Client::Listener {
     std::function<void(std::list<std::unique_ptr<C2Work>>& workItems)> callBack;
 };
 
-void parseArgs(int argc, char** argv);
-
 // Return all test parameters, a list of tuple of <instance, component>.
-const std::vector<TestParameters>& getTestParameters();
+const std::vector<std::tuple<std::string, std::string>>& getTestParameters();
 
 // Return all test parameters, a list of tuple of <instance, component> with matching domain and
 // kind.
-const std::vector<TestParameters>& getTestParameters(C2Component::domain_t domain,
-                                                     C2Component::kind_t kind);
+const std::vector<std::tuple<std::string, std::string>>& getTestParameters(
+        C2Component::domain_t domain, C2Component::kind_t kind);
 
 /*
  * common functions declarations

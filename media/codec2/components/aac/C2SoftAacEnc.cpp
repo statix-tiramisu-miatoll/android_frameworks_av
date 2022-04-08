@@ -272,9 +272,8 @@ status_t C2SoftAacEnc::setAudioParams() {
         return UNKNOWN_ERROR;
     }
 
-    if (sbrMode != C2Config::AAC_SBR_AUTO && aacProfile == C2Config::PROFILE_AAC_ELD) {
-        int aacSbrMode = sbrMode != C2Config::AAC_SBR_OFF;
-        if (AACENC_OK != aacEncoder_SetParam(mAACEncoder, AACENC_SBR_MODE, aacSbrMode)) {
+    if (sbrMode != -1 && aacProfile == C2Config::PROFILE_AAC_ELD) {
+        if (AACENC_OK != aacEncoder_SetParam(mAACEncoder, AACENC_SBR_MODE, sbrMode)) {
             ALOGE("Failed to set AAC encoder parameters");
             return UNKNOWN_ERROR;
         }
@@ -693,13 +692,11 @@ private:
 
 }  // namespace android
 
-__attribute__((cfi_canonical_jump_table))
 extern "C" ::C2ComponentFactory* CreateCodec2Factory() {
     ALOGV("in %s", __func__);
     return new ::android::C2SoftAacEncFactory();
 }
 
-__attribute__((cfi_canonical_jump_table))
 extern "C" void DestroyCodec2Factory(::C2ComponentFactory* factory) {
     ALOGV("in %s", __func__);
     delete factory;

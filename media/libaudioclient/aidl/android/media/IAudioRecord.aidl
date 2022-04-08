@@ -16,13 +16,9 @@
 
 package android.media;
 
-import android.media.MicrophoneInfoData;
+import android.media.MicrophoneInfo;
 
-/**
- * Native code must specify namespace media (media::IAudioRecord) when referring to this class.
- *
- * {@hide}
- */
+/* Native code must specify namespace media (media::IAudioRecord) when referring to this class */
 interface IAudioRecord {
 
   /* After it's created the track is not active. Call start() to
@@ -39,7 +35,7 @@ interface IAudioRecord {
 
   /* Get a list of current active microphones.
    */
-  void getActiveMicrophones(out MicrophoneInfoData[] activeMicrophones);
+  void getActiveMicrophones(out MicrophoneInfo[] activeMicrophones);
 
   /* Set the microphone direction (for processing).
    */
@@ -48,6 +44,4 @@ interface IAudioRecord {
   /* Set the microphone zoom (for processing).
    */
   void setPreferredMicrophoneFieldDimension(float zoom);
-
-  void shareAudioHistory(@utf8InCpp String sharedAudioPackageName, long sharedAudioStartMs);
 }

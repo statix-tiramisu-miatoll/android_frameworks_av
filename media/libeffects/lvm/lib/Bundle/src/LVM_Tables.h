@@ -33,7 +33,7 @@
 /*                                                                                  */
 /************************************************************************************/
 
-extern FO_FLOAT_LShx_Coefs_t LVM_TrebleBoostCoefs[];
+extern FO_FLOAT_LShx_Coefs_t     LVM_TrebleBoostCoefs[];
 
 /************************************************************************************/
 /*                                                                                  */
@@ -45,3 +45,4 @@ extern const LVM_FLOAT LVM_VolumeTable[];
 extern const LVM_INT16 LVM_MixerTCTable[];
 
 #endif /* __LVM_TABLES_H__ */
+

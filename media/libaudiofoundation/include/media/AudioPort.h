@@ -17,11 +17,7 @@
 #pragma once
 
 #include <string>
-#include <type_traits>
 
-#include <android/media/AudioPort.h>
-#include <android/media/AudioPortConfig.h>
-#include <android/media/ExtraAudioDescriptor.h>
 #include <binder/Parcel.h>
 #include <binder/Parcelable.h>
 #include <media/AudioGain.h>
@@ -52,8 +48,6 @@ public:
 
     virtual void toAudioPort(struct audio_port *port) const;
 
-    virtual void toAudioPort(struct audio_port_v7 *port) const;
-
     virtual void addAudioProfile(const sp<AudioProfile> &profile) {
         mProfiles.add(profile);
     }
@@ -68,17 +62,7 @@ public:
     void setAudioProfiles(const AudioProfileVector &profiles) { mProfiles = profiles; }
     AudioProfileVector &getAudioProfiles() { return mProfiles; }
 
-    void setExtraAudioDescriptors(
-            const std::vector<media::ExtraAudioDescriptor> extraAudioDescriptors) {
-        mExtraAudioDescriptors = extraAudioDescriptors;
-    }
-    std::vector<media::ExtraAudioDescriptor> &getExtraAudioDescriptors() {
-        return mExtraAudioDescriptors;
-    }
-
     virtual void importAudioPort(const sp<AudioPort>& port, bool force = false);
-
-    virtual void importAudioPort(const audio_port_v7& port);
 
     status_t checkGain(const struct audio_gain_config *gainConfig, int index) const {
         if (index < 0 || (size_t)index >= mGains.size()) {
@@ -102,31 +86,12 @@ public:
     status_t writeToParcel(Parcel* parcel) const override;
     status_t readFromParcel(const Parcel* parcel) override;
 
-    status_t writeToParcelable(media::AudioPort* parcelable) const;
-    status_t readFromParcelable(const media::AudioPort& parcelable);
-
     AudioGains mGains; // gain controllers
 protected:
     std::string  mName;
     audio_port_type_t mType;
     audio_port_role_t mRole;
     AudioProfileVector mProfiles; // AudioProfiles supported by this port (format, Rates, Channels)
-
-    // Audio capabilities that are defined by hardware descriptors when the format is unrecognized
-    // by the platform, e.g. short audio descriptor in EDID for HDMI.
-    std::vector<media::ExtraAudioDescriptor> mExtraAudioDescriptors;
-private:
-    template <typename T, std::enable_if_t<std::is_same<T, struct audio_port>::value
-                                        || std::is_same<T, struct audio_port_v7>::value, int> = 0>
-    void toAudioPortBase(T* port) const {
-        port->role = mRole;
-        port->type = mType;
-        strlcpy(port->name, mName.c_str(), AUDIO_PORT_MAX_NAME_LEN);
-        port->num_gains = std::min(mGains.size(), (size_t) AUDIO_PORT_MAX_GAINS);
-        for (size_t i = 0; i < port->num_gains; i++) {
-            port->gains[i] = mGains[i]->getGain();
-        }
-    }
 };
 
 
@@ -154,8 +119,6 @@ public:
 
     status_t writeToParcel(Parcel* parcel) const override;
     status_t readFromParcel(const Parcel* parcel) override;
-    status_t writeToParcelable(media::AudioPortConfig* parcelable) const;
-    status_t readFromParcelable(const media::AudioPortConfig& parcelable);
 
 protected:
     unsigned int mSamplingRate = 0u;

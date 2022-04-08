@@ -33,7 +33,7 @@ namespace android {
 class GraphicBuffer;
 class IOMXBufferSource;
 class IOMXObserver;
-struct OMXStore;
+struct OMXMaster;
 class OMXBuffer;
 using IHidlMemory = hidl::memory::V1_0::IMemory;
 using hardware::media::omx::V1_0::implementation::Omx;

@@ -36,6 +36,7 @@
 #include "device3/RotateAndCropMapper.h"
 #include "device3/ZoomRatioMapper.h"
 #include "utils/TagMonitor.h"
+#include "utils/LatencyHistogram.h"
 #include <camera_metadata_hidden.h>
 
 namespace android {
@@ -208,7 +209,6 @@ class Camera3OfflineSession :
     sp<camera3::Camera3Stream> mInputStream;
     camera3::StreamSet mOutputStreams;
     camera3::BufferRecords mBufferRecords;
-    SessionStatsBuilder mSessionStatsBuilder;
 
     std::mutex mOfflineReqsLock;
     camera3::InFlightRequestMap mOfflineReqs;

@@ -113,7 +113,7 @@ public:
 
     static sp<TCam>      connect(int cameraId,
                                  const String16& clientPackageName,
-                                 int clientUid, int clientPid, int targetSdkVersion);
+                                 int clientUid, int clientPid);
     virtual void         disconnect();
 
     void                 setListener(const sp<TCamListener>& listener);

@@ -44,12 +44,7 @@ public:
 
     virtual ~C2AllocatorBlob() override;
 
-    virtual bool checkHandle(const C2Handle* const o) const override { return CheckHandle(o); }
-
-    static bool CheckHandle(const C2Handle* const o);
-
-    // deprecated
-    static bool isValid(const C2Handle* const o) { return CheckHandle(o); }
+    static bool isValid(const C2Handle* const o);
 
 private:
     std::shared_ptr<const Traits> mTraits;

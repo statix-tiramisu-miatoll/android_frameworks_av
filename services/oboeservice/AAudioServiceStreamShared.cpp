@@ -24,6 +24,8 @@
 
 #include <aaudio/AAudio.h>
 
+#include "binding/IAAudioService.h"
+
 #include "binding/AAudioServiceMessage.h"
 #include "AAudioServiceStreamBase.h"
 #include "AAudioServiceStreamShared.h"
@@ -52,25 +54,18 @@ std::string AAudioServiceStreamShared::dumpHeader() {
     return result.str();
 }
 
-std::string AAudioServiceStreamShared::dump() const NO_THREAD_SAFETY_ANALYSIS {
+std::string AAudioServiceStreamShared::dump() const {
     std::stringstream result;
-
-    const bool isLocked = AAudio_tryUntilTrue(
-            [this]()->bool { return audioDataQueueLock.try_lock(); } /* f */,
-            50 /* times */,
-            20 /* sleepMs */);
-    if (!isLocked) {
-        result << "AAudioServiceStreamShared may be deadlocked\n";
-    }
 
     result << AAudioServiceStreamBase::dump();
 
-    result << mAudioDataQueue->dump();
+    auto fifo = mAudioDataQueue->getFifoBuffer();
+    int32_t readCounter = fifo->getReadCounter();
+    int32_t writeCounter = fifo->getWriteCounter();
+    result << std::setw(10) << writeCounter;
+    result << std::setw(10) << readCounter;
+    result << std::setw(8) << (writeCounter - readCounter);
     result << std::setw(8) << getXRunCount();
-
-    if (isLocked) {
-        audioDataQueueLock.unlock();
-    }
 
     return result.str();
 }
@@ -110,7 +105,7 @@ int32_t AAudioServiceStreamShared::calculateBufferCapacity(int32_t requestedCapa
     }
     int32_t capacityInFrames = numBursts * framesPerBurst;
 
-    // Final range check.
+    // Final sanity check.
     if (capacityInFrames > MAX_FRAMES_PER_BUFFER) {
         ALOGE("calculateBufferCapacity() calc capacity %d > max %d",
               capacityInFrames, MAX_FRAMES_PER_BUFFER);
@@ -183,9 +178,9 @@ aaudio_result_t AAudioServiceStreamShared::open(const aaudio::AAudioStreamReques
     }
 
     {
-        std::lock_guard<std::mutex> lock(audioDataQueueLock);
+        std::lock_guard<std::mutex> lock(mAudioDataQueueLock);
         // Create audio data shared memory buffer for client.
-        mAudioDataQueue = std::make_shared<SharedRingBuffer>();
+        mAudioDataQueue = new SharedRingBuffer();
         result = mAudioDataQueue->allocate(calculateBytesPerFrame(), getBufferCapacity());
         if (result != AAUDIO_OK) {
             ALOGE("%s() could not allocate FIFO with %d frames",
@@ -208,13 +203,25 @@ error:
     return result;
 }
 
+aaudio_result_t AAudioServiceStreamShared::close_l()  {
+    aaudio_result_t result = AAudioServiceStreamBase::close_l();
+
+    {
+        std::lock_guard<std::mutex> lock(mAudioDataQueueLock);
+        delete mAudioDataQueue;
+        mAudioDataQueue = nullptr;
+    }
+
+    return result;
+}
+
 /**
  * Get an immutable description of the data queue created by this service.
  */
 aaudio_result_t AAudioServiceStreamShared::getAudioDataDescription(
         AudioEndpointParcelable &parcelable)
 {
-    std::lock_guard<std::mutex> lock(audioDataQueueLock);
+    std::lock_guard<std::mutex> lock(mAudioDataQueueLock);
     if (mAudioDataQueue == nullptr) {
         ALOGW("%s(): mUpMessageQueue null! - stream not open", __func__);
         return AAUDIO_ERROR_NULL;
@@ -265,38 +272,4 @@ aaudio_result_t AAudioServiceStreamShared::getHardwareTimestamp(int64_t *positio
     }
     *positionFrames = position;
     return result;
-}
-
-void AAudioServiceStreamShared::writeDataIfRoom(int64_t mmapFramesRead,
-                                                const void *buffer, int32_t numFrames) {
-    int64_t clientFramesWritten = 0;
-
-    // Lock the AudioFifo to protect against close.
-    std::lock_guard <std::mutex> lock(audioDataQueueLock);
-
-    if (mAudioDataQueue != nullptr) {
-        std::shared_ptr<FifoBuffer> fifo = mAudioDataQueue->getFifoBuffer();
-        // Determine offset between framePosition in client's stream
-        // vs the underlying MMAP stream.
-        clientFramesWritten = fifo->getWriteCounter();
-        // There are two indices that refer to the same frame.
-        int64_t positionOffset = mmapFramesRead - clientFramesWritten;
-        setTimestampPositionOffset(positionOffset);
-
-        // Is the buffer too full to write a burst?
-        if (fifo->getEmptyFramesAvailable() < getFramesPerBurst()) {
-            incrementXRunCount();
-        } else {
-            fifo->write(buffer, numFrames);
-        }
-        clientFramesWritten = fifo->getWriteCounter();
-    }
-
-    if (clientFramesWritten > 0) {
-        // This timestamp represents the completion of data being written into the
-        // client buffer. It is sent to the client and used in the timing model
-        // to decide when data will be available to read.
-        Timestamp timestamp(clientFramesWritten, AudioClock::getNanoseconds());
-        markTransferTime(timestamp);
-    }
 }

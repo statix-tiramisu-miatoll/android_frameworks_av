@@ -380,15 +380,12 @@ media_status_t AMediaDrm_openSession(AMediaDrm *mObj, AMediaDrmSessionId *sessio
     }
     Vector<uint8_t> session;
     status_t status = mObj->mDrm->openSession(DrmPlugin::kSecurityLevelMax, session);
-    if (status != OK) {
-        sessionId->ptr = NULL;
-        sessionId->length = 0;
-        return translateStatus(status);
+    if (status == OK) {
+        mObj->mIds.push_front(session);
+        List<idvec_t>::iterator iter = mObj->mIds.begin();
+        sessionId->ptr = iter->array();
+        sessionId->length = iter->size();
     }
-    mObj->mIds.push_front(session);
-    List<idvec_t>::iterator iter = mObj->mIds.begin();
-    sessionId->ptr = iter->array();
-    sessionId->length = iter->size();
     return AMEDIA_OK;
 }
 
@@ -492,7 +489,6 @@ media_status_t AMediaDrm_provideKeyResponse(AMediaDrm *mObj, const AMediaDrmScop
     } else {
         keySetId->ptr = NULL;
         keySetId->length = 0;
-        return translateStatus(status);
     }
     return AMEDIA_OK;
 }

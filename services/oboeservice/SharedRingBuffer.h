@@ -18,9 +18,8 @@
 #define AAUDIO_SHARED_RINGBUFFER_H
 
 #include <android-base/unique_fd.h>
-#include <cutils/ashmem.h>
 #include <stdint.h>
-#include <string>
+#include <cutils/ashmem.h>
 #include <sys/mman.h>
 
 #include "fifo/FifoBuffer.h"
@@ -48,25 +47,15 @@ public:
     void fillParcelable(AudioEndpointParcelable &endpointParcelable,
                         RingBufferParcelable &ringBufferParcelable);
 
-    /**
-     * Return available frames as a fraction of the capacity.
-     * @return fullness between 0.0 and 1.0
-     */
-    double getFractionalFullness() const;
-
-    // dump: write# read# available
-    std::string dump() const;
-
-    std::shared_ptr<android::FifoBuffer> getFifoBuffer() {
+    android::FifoBuffer * getFifoBuffer() {
         return mFifoBuffer;
     }
 
 private:
     android::base::unique_fd  mFileDescriptor;
-    std::shared_ptr<android::FifoBufferIndirect>  mFifoBuffer;
-    uint8_t                  *mSharedMemory = nullptr; // mmap
+    android::FifoBuffer      *mFifoBuffer = nullptr;
+    uint8_t                  *mSharedMemory = nullptr;
     int32_t                   mSharedMemorySizeInBytes = 0;
-    // size of memory used for data vs counters
     int32_t                   mDataMemorySizeInBytes = 0;
     android::fifo_frames_t    mCapacityInFrames = 0;
 };

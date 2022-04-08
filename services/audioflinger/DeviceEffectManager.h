@@ -33,7 +33,7 @@ public:
     sp<EffectHandle> createEffect_l(effect_descriptor_t *descriptor,
                 const AudioDeviceTypeAddr& device,
                 const sp<AudioFlinger::Client>& client,
-                const sp<media::IEffectClient>& effectClient,
+                const sp<IEffectClient>& effectClient,
                 const std::map<audio_patch_handle_t, PatchPanel::Patch>& patches,
                 int *enabled,
                 status_t *status,
@@ -165,7 +165,6 @@ public:
     uint32_t  sampleRate() const override { return 0; }
     audio_channel_mask_t channelMask() const override { return AUDIO_CHANNEL_NONE; }
     uint32_t channelCount() const override { return 0; }
-    audio_channel_mask_t hapticChannelMask() const override { return AUDIO_CHANNEL_NONE; }
     size_t    frameCount() const override  { return 0; }
     uint32_t  latency() const override  { return 0; }
 
@@ -183,7 +182,7 @@ public:
     void checkSuspendOnEffectEnabled(const sp<EffectBase>& effect __unused,
                           bool enabled __unused, bool threadLocked __unused) override {}
     void resetVolume() override {}
-    product_strategy_t strategy() const override  { return static_cast<product_strategy_t>(0); }
+    uint32_t strategy() const override  { return 0; }
     int32_t activeTrackCnt() const override { return 0; }
     void onEffectEnable(const sp<EffectBase>& effect __unused) override {}
     void onEffectDisable(const sp<EffectBase>& effect __unused) override {}

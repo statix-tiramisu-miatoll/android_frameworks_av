@@ -47,6 +47,8 @@ typedef struct AMediaCrypto AMediaCrypto;
 
 typedef uint8_t AMediaUUID[16];
 
+#if __ANDROID_API__ >= 21
+
 /**
  * Available since API level 21.
  */
@@ -66,6 +68,8 @@ AMediaCrypto* AMediaCrypto_new(const AMediaUUID uuid, const void *initData, size
  * Available since API level 21.
  */
 void AMediaCrypto_delete(AMediaCrypto* crypto) __INTRODUCED_IN(21);
+
+#endif /* __ANDROID_API__ >= 21 */
 
 __END_DECLS
 

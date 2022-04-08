@@ -1,65 +1,32 @@
-// for frameworks/av/media
 {
-    "presubmit-large": [
-        // runs whenever we change something in this tree
+  "presubmit": [
+    {
+      "name": "GtsMediaTestCases",
+      "options" : [
         {
-            "name": "CtsMediaTestCases",
-            "options": [
-                {
-                    "include-filter": "android.media.cts.EncodeDecodeTest"
-                }
-            ]
+          "include-annotation": "android.platform.test.annotations.Presubmit"
         },
         {
-            "name": "CtsMediaTestCases",
-            "options": [
-                {
-                    "include-filter": "android.media.cts.DecodeEditEncodeTest"
-                }
-            ]
+          "include-filter": "com.google.android.media.gts.WidevineGenericOpsTests"
         }
-    ],
-    "presubmit": [
+      ]
+    },
+    {
+      "name": "GtsExoPlayerTestCases",
+      "options" : [
         {
-            "name": "GtsMediaTestCases",
-            "options" : [
-                {
-                    "include-annotation": "android.platform.test.annotations.Presubmit"
-                },
-                {
-                    "include-filter": "com.google.android.media.gts.WidevineGenericOpsTests"
-                },
-                {
-                    "include-filter": "com.google.android.media.gts.WidevineH264PlaybackTests"
-                }
-            ]
-        }
-    ],
-
-    "imports": [
-        {
-            "path": "frameworks/av/drm/mediadrm/plugins"
-        }
-    ],
-
-    "platinum-postsubmit": [
-        // runs regularly, independent of changes in this tree.
-        // signals if changes elsewhere break media functionality
-        {
-            "name": "CtsMediaTestCases",
-            "options": [
-                {
-                    "include-filter": "android.media.cts.EncodeDecodeTest"
-                }
-            ]
+          "include-annotation": "android.platform.test.annotations.SocPresubmit"
         },
         {
-            "name": "CtsMediaTestCases",
-            "options": [
-                {
-                    "include-filter": "android.media.cts.DecodeEditEncodeTest"
-                }
-            ]
+          "include-filter": "com.google.android.exoplayer.gts.DashTest#testWidevine23FpsH264Fixed"
         }
-    ]
+      ]
+    }
+  ],
+  "imports": [
+    {
+      "path": "frameworks/av/drm/mediadrm/plugins"
+    }
+  ]
 }
+

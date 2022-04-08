@@ -173,15 +173,22 @@ status_t AudioStreamOut::open(
     return status;
 }
 
-audio_config_base_t AudioStreamOut::getAudioProperties() const
+audio_format_t AudioStreamOut::getFormat() const
 {
-    audio_config_base_t result = AUDIO_CONFIG_BASE_INITIALIZER;
-    if (stream->getAudioProperties(&result) != OK) {
-        result.sample_rate = 0;
-        result.channel_mask = AUDIO_CHANNEL_INVALID;
-        result.format = AUDIO_FORMAT_INVALID;
-    }
-    return result;
+    audio_format_t result;
+    return stream->getFormat(&result) == OK ? result : AUDIO_FORMAT_INVALID;
+}
+
+uint32_t AudioStreamOut::getSampleRate() const
+{
+    uint32_t result;
+    return stream->getSampleRate(&result) == OK ? result : 0;
+}
+
+audio_channel_mask_t AudioStreamOut::getChannelMask() const
+{
+    audio_channel_mask_t result;
+    return stream->getChannelMask(&result) == OK ? result : AUDIO_CHANNEL_INVALID;
 }
 
 int AudioStreamOut::flush()

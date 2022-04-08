@@ -31,8 +31,7 @@ class C2Decoder : public BenchmarkC2Common {
 
     void deInitCodec();
 
-    void dumpStatistics(string inputReference, int64_t durationUs, string componentName,
-                        string statsFile);
+    void dumpStatistics(string inputReference, int64_t durationUs);
 
     void resetDecoder();
 

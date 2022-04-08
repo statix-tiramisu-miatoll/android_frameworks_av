@@ -33,7 +33,7 @@ namespace camera3 {
  * - HAL supports zoomRatio and the application uses cropRegion, or
  * - HAL doesn't support zoomRatio, but the application uses zoomRatio
  */
-class ZoomRatioMapper : public CoordinateMapper {
+class ZoomRatioMapper : private CoordinateMapper {
   public:
     ZoomRatioMapper() = default;
     ZoomRatioMapper(const CameraMetadata *deviceInfo,
@@ -41,9 +41,7 @@ class ZoomRatioMapper : public CoordinateMapper {
     ZoomRatioMapper(const ZoomRatioMapper& other) :
             mHalSupportsZoomRatio(other.mHalSupportsZoomRatio),
             mArrayWidth(other.mArrayWidth), mArrayHeight(other.mArrayHeight),
-            mIsValid(other.mIsValid) { initRemappedKeys(); }
-
-    void initRemappedKeys() override;
+            mIsValid(other.mIsValid) {}
 
     /**
      * Initialize request template with valid zoomRatio if necessary.
@@ -68,31 +66,22 @@ class ZoomRatioMapper : public CoordinateMapper {
 
   public: // Visible for testing. Do not use concurently.
     void scaleCoordinates(int32_t* coordPairs, int coordCount,
-            float scaleRatio, bool clamp, int32_t arrayWidth, int32_t arrayHeight);
+            float scaleRatio, bool clamp);
 
     bool isValid() { return mIsValid; }
   private:
     // const after construction
     bool mHalSupportsZoomRatio;
-
-    // active array / pre-correction array dimension for default and maximum
-    // resolution modes.
+    // active array / pre-correction array dimension
     int32_t mArrayWidth, mArrayHeight;
-    int32_t mArrayWidthMaximumResolution, mArrayHeightMaximumResolution;
 
     bool mIsValid = false;
 
-    status_t deriveZoomRatio(const CameraMetadata* metadata, float *zoomRatio, int arrayWidth,
-            int arrayHeight);
-    void scaleRects(int32_t* rects, int rectCount, float scaleRatio, int32_t arrayWidth,
-            int32_t arrayHeight);
+    float deriveZoomRatio(const CameraMetadata* metadata);
+    void scaleRects(int32_t* rects, int rectCount, float scaleRatio);
 
-    status_t separateZoomFromCropLocked(CameraMetadata* metadata, bool isResult, int arrayWidth,
-            int arrayHeight);
-    status_t combineZoomAndCropLocked(CameraMetadata* metadata, bool isResult, int arrayWidth,
-            int arrayHeight);
-    status_t getArrayDimensionsToBeUsed(const CameraMetadata *settings, int32_t *arrayWidth,
-            int32_t *arrayHeight);
+    status_t separateZoomFromCropLocked(CameraMetadata* metadata, bool isResult);
+    status_t combineZoomAndCropLocked(CameraMetadata* metadata, bool isResult);
 };
 
 } // namespace camera3

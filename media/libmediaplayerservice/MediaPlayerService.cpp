@@ -49,7 +49,6 @@
 
 #include <codec2/hidl/client.h>
 #include <datasource/HTTPBase.h>
-#include <media/AidlConversion.h>
 #include <media/IMediaHTTPService.h>
 #include <media/IRemoteDisplay.h>
 #include <media/IRemoteDisplayClient.h>
@@ -95,7 +94,6 @@ using android::BAD_VALUE;
 using android::NOT_ENOUGH_DATA;
 using android::Parcel;
 using android::media::VolumeShaper;
-using android::content::AttributionSourceState;
 
 // Max number of entries in the filter.
 const int kMaxFilterSize = 64;  // I pulled that out of thin air.
@@ -455,22 +453,14 @@ MediaPlayerService::~MediaPlayerService()
     ALOGV("MediaPlayerService destroyed");
 }
 
-sp<IMediaRecorder> MediaPlayerService::createMediaRecorder(
-        const AttributionSourceState& attributionSource)
+sp<IMediaRecorder> MediaPlayerService::createMediaRecorder(const String16 &opPackageName)
 {
-    // TODO b/182392769: use attribution source util
-    AttributionSourceState verifiedAttributionSource = attributionSource;
-    verifiedAttributionSource.uid = VALUE_OR_FATAL(
-      legacy2aidl_uid_t_int32_t(IPCThreadState::self()->getCallingUid()));
-    verifiedAttributionSource.pid = VALUE_OR_FATAL(
-        legacy2aidl_pid_t_int32_t(IPCThreadState::self()->getCallingPid()));
-    sp<MediaRecorderClient> recorder =
-        new MediaRecorderClient(this, verifiedAttributionSource);
+    pid_t pid = IPCThreadState::self()->getCallingPid();
+    sp<MediaRecorderClient> recorder = new MediaRecorderClient(this, pid, opPackageName);
     wp<MediaRecorderClient> w = recorder;
     Mutex::Autolock lock(mLock);
     mMediaRecorderClients.add(w);
-    ALOGV("Create new media recorder client from pid %s",
-        verifiedAttributionSource.toString().c_str());
+    ALOGV("Create new media recorder client from pid %d", pid);
     return recorder;
 }
 
@@ -490,21 +480,17 @@ sp<IMediaMetadataRetriever> MediaPlayerService::createMetadataRetriever()
 }
 
 sp<IMediaPlayer> MediaPlayerService::create(const sp<IMediaPlayerClient>& client,
-        audio_session_t audioSessionId, const AttributionSourceState& attributionSource)
+        audio_session_t audioSessionId)
 {
+    pid_t pid = IPCThreadState::self()->getCallingPid();
     int32_t connId = android_atomic_inc(&mNextConnId);
-    // TODO b/182392769: use attribution source util
-    AttributionSourceState verifiedAttributionSource = attributionSource;
-    verifiedAttributionSource.pid = VALUE_OR_FATAL(
-        legacy2aidl_pid_t_int32_t(IPCThreadState::self()->getCallingPid()));
-    verifiedAttributionSource.uid = VALUE_OR_FATAL(
-        legacy2aidl_uid_t_int32_t(IPCThreadState::self()->getCallingUid()));
 
     sp<Client> c = new Client(
-            this, verifiedAttributionSource, connId, client, audioSessionId);
+            this, pid, connId, client, audioSessionId,
+            IPCThreadState::self()->getCallingUid());
 
-    ALOGV("Create new client(%d) from %s, ", connId,
-        verifiedAttributionSource.toString().c_str());
+    ALOGV("Create new client(%d) from pid %d, uid %d, ", connId, pid,
+         IPCThreadState::self()->getCallingUid());
 
     wp<Client> w = c;
     {
@@ -557,8 +543,8 @@ status_t MediaPlayerService::Client::dump(int fd, const Vector<String16>& args)
     char buffer[SIZE];
     String8 result;
     result.append(" Client\n");
-    snprintf(buffer, 255, "  AttributionSource(%s), connId(%d), status(%d), looping(%s)\n",
-        mAttributionSource.toString().c_str(), mConnId, mStatus, mLoop?"true": "false");
+    snprintf(buffer, 255, "  pid(%d), connId(%d), status(%d), looping(%s)\n",
+            mPid, mConnId, mStatus, mLoop?"true": "false");
     result.append(buffer);
 
     sp<MediaPlayerBase> p;
@@ -622,8 +608,7 @@ status_t MediaPlayerService::dump(int fd, const Vector<String16>& args)
             for (int i = 0, n = mMediaRecorderClients.size(); i < n; ++i) {
                 sp<MediaRecorderClient> c = mMediaRecorderClients[i].promote();
                 if (c != 0) {
-                    snprintf(buffer, 255, " MediaRecorderClient pid(%d)\n",
-                            c->mAttributionSource.pid);
+                    snprintf(buffer, 255, " MediaRecorderClient pid(%d)\n", c->mPid);
                     result.append(buffer);
                     write(fd, result.string(), result.size());
                     result = "\n";
@@ -746,18 +731,19 @@ bool MediaPlayerService::hasClient(wp<Client> client)
 }
 
 MediaPlayerService::Client::Client(
-        const sp<MediaPlayerService>& service, const AttributionSourceState& attributionSource,
+        const sp<MediaPlayerService>& service, pid_t pid,
         int32_t connId, const sp<IMediaPlayerClient>& client,
-        audio_session_t audioSessionId)
-        : mAttributionSource(attributionSource)
+        audio_session_t audioSessionId, uid_t uid)
 {
     ALOGV("Client(%d) constructor", connId);
+    mPid = pid;
     mConnId = connId;
     mService = service;
     mClient = client;
     mLoop = false;
     mStatus = NO_INIT;
     mAudioSessionId = audioSessionId;
+    mUid = uid;
     mRetransmitEndpointValid = false;
     mAudioAttributes = NULL;
     mListener = new Listener(this);
@@ -770,8 +756,7 @@ MediaPlayerService::Client::Client(
 
 MediaPlayerService::Client::~Client()
 {
-    ALOGV("Client(%d) destructor AttributionSource = %s", mConnId,
-            mAttributionSource.toString().c_str());
+    ALOGV("Client(%d) destructor pid = %d", mConnId, mPid);
     mAudioOutput.clear();
     wp<Client> client(this);
     disconnect();
@@ -784,8 +769,7 @@ MediaPlayerService::Client::~Client()
 
 void MediaPlayerService::Client::disconnect()
 {
-    ALOGV("disconnect(%d) from AttributionSource %s", mConnId,
-            mAttributionSource.toString().c_str());
+    ALOGV("disconnect(%d) from pid %d", mConnId, mPid);
     // grab local reference and clear main reference to prevent future
     // access to object
     sp<MediaPlayerBase> p;
@@ -825,12 +809,11 @@ sp<MediaPlayerBase> MediaPlayerService::Client::createPlayer(player_type playerT
         p.clear();
     }
     if (p == NULL) {
-        p = MediaPlayerFactory::createPlayer(playerType, mListener,
-            VALUE_OR_FATAL(aidl2legacy_int32_t_pid_t(mAttributionSource.pid)));
+        p = MediaPlayerFactory::createPlayer(playerType, mListener, mPid);
     }
 
     if (p != NULL) {
-        p->setUID(VALUE_OR_FATAL(aidl2legacy_int32_t_uid_t(mAttributionSource.uid)));
+        p->setUID(mUid);
     }
 
     return p;
@@ -938,8 +921,8 @@ sp<MediaPlayerBase> MediaPlayerService::Client::setDataSource_pre(
     mAudioDeviceUpdatedListener = new AudioDeviceUpdatedNotifier(p);
 
     if (!p->hardwareOutput()) {
-        mAudioOutput = new AudioOutput(mAudioSessionId, mAttributionSource,
-                mAudioAttributes, mAudioDeviceUpdatedListener);
+        mAudioOutput = new AudioOutput(mAudioSessionId, IPCThreadState::self()->getCallingUid(),
+                mPid, mAudioAttributes, mAudioDeviceUpdatedListener);
         static_cast<MediaPlayerInterface*>(p.get())->setAudioSink(mAudioOutput);
     }
 
@@ -1077,17 +1060,6 @@ status_t MediaPlayerService::Client::setDataSource(
     }
     // now set data source
     return mStatus = setDataSource_post(p, p->setDataSource(dataSource));
-}
-
-status_t MediaPlayerService::Client::setDataSource(
-        const String8& rtpParams) {
-    player_type playerType = NU_PLAYER;
-    sp<MediaPlayerBase> p = setDataSource_pre(playerType);
-    if (p == NULL) {
-        return NO_INIT;
-    }
-    // now set data source
-    return mStatus = setDataSource_post(p, p->setDataSource(rtpParams));
 }
 
 void MediaPlayerService::Client::disconnectNativeWindow_l() {
@@ -1788,9 +1760,8 @@ int Antagonizer::callbackThread(void* user)
 
 #undef LOG_TAG
 #define LOG_TAG "AudioSink"
-MediaPlayerService::AudioOutput::AudioOutput(audio_session_t sessionId,
-        const AttributionSourceState& attributionSource, const audio_attributes_t* attr,
-        const sp<AudioSystem::AudioDeviceCallback>& deviceCallback)
+MediaPlayerService::AudioOutput::AudioOutput(audio_session_t sessionId, uid_t uid, int pid,
+        const audio_attributes_t* attr, const sp<AudioSystem::AudioDeviceCallback>& deviceCallback)
     : mCallback(NULL),
       mCallbackCookie(NULL),
       mCallbackData(NULL),
@@ -1802,7 +1773,8 @@ MediaPlayerService::AudioOutput::AudioOutput(audio_session_t sessionId,
       mMsecsPerFrame(0),
       mFrameSize(0),
       mSessionId(sessionId),
-      mAttributionSource(attributionSource),
+      mUid(uid),
+      mPid(pid),
       mSendLevel(0.0),
       mAuxEffectId(0),
       mFlags(AUDIO_OUTPUT_FLAG_NONE),
@@ -1836,7 +1808,8 @@ MediaPlayerService::AudioOutput::~AudioOutput()
 //static
 void MediaPlayerService::AudioOutput::setMinBufferCount()
 {
-    if (property_get_bool("ro.boot.qemu", false)) {
+    char value[PROPERTY_VALUE_MAX];
+    if (property_get("ro.kernel.qemu", value, 0)) {
         mIsOnEmulator = true;
         mMinBufferCount = 12;  // to prevent systematic buffer underrun for emulator
     }
@@ -2198,7 +2171,8 @@ status_t MediaPlayerService::AudioOutput::open(
                     mSessionId,
                     AudioTrack::TRANSFER_CALLBACK,
                     offloadInfo,
-                    mAttributionSource,
+                    mUid,
+                    mPid,
                     mAttributes,
                     doNotReconnect,
                     1.0f,  // default value for maxRequiredSpeed
@@ -2225,7 +2199,8 @@ status_t MediaPlayerService::AudioOutput::open(
                     mSessionId,
                     AudioTrack::TRANSFER_DEFAULT,
                     NULL, // offload info
-                    mAttributionSource,
+                    mUid,
+                    mPid,
                     mAttributes,
                     doNotReconnect,
                     targetSpeed,
@@ -2253,12 +2228,6 @@ status_t MediaPlayerService::AudioOutput::open(
             if (mRecycledTrack->frameCount() != t->frameCount()) {
                 ALOGV("framecount differs: %zu/%zu frames",
                       mRecycledTrack->frameCount(), t->frameCount());
-                reuse = false;
-            }
-            // If recycled and new tracks are not on the same output,
-            // don't reuse the recycled one.
-            if (mRecycledTrack->getOutput() != t->getOutput()) {
-                ALOGV("output has changed, don't reuse track");
                 reuse = false;
             }
         }

@@ -74,12 +74,6 @@ enum {
     kMaxIndicesToCheck = 32, // used when enumerating supported formats and profiles
 };
 
-namespace {
-
-constexpr char TUNNEL_PEEK_KEY[] = "android._trigger-tunnel-peek";
-
-}
-
 // OMX errors are directly mapped into status_t range if
 // there is no corresponding MediaError status code.
 // Use the statusFromOMXError(int32_t omxError) function.
@@ -285,13 +279,6 @@ protected:
 
     void postFillThisBuffer(BufferInfo *info);
 
-    void maybePostExtraOutputMetadataBufferRequest() {
-        if (!mPendingExtraOutputMetadataBufferRequest) {
-            (new AMessage(kWhatSubmitExtraOutputMetadataBuffer, mCodec))->post();
-            mPendingExtraOutputMetadataBufferRequest = true;
-        }
-    }
-
 private:
     // Handles an OMX message. Returns true iff message was handled.
     bool onOMXMessage(const sp<AMessage> &msg);
@@ -314,8 +301,6 @@ private:
     virtual bool onOMXFrameRendered(int64_t mediaTimeUs, nsecs_t systemNano);
 
     void getMoreInputDataIfPossible();
-
-    bool mPendingExtraOutputMetadataBufferRequest;
 
     DISALLOW_EVIL_CONSTRUCTORS(BaseState);
 };
@@ -570,8 +555,6 @@ ACodec::ACodec()
       mShutdownInProgress(false),
       mExplicitShutdown(false),
       mIsLegacyVP9Decoder(false),
-      mIsStreamCorruptFree(false),
-      mIsLowLatency(false),
       mEncoderDelay(0),
       mEncoderPadding(0),
       mRotationDegrees(0),
@@ -904,7 +887,7 @@ status_t ACodec::allocateBuffersOnPort(OMX_U32 portIndex) {
 
             sp<DataConverter> converter = mConverter[portIndex];
             if (converter != NULL) {
-                // here we assume conversions of max 4:1, so result fits in int32
+                // here we assume sane conversions of max 4:1, so result fits in int32
                 if (portIndex == kPortIndexInput) {
                     conversionBufferSize = converter->sourceSize(bufSize);
                 } else {
@@ -1469,10 +1452,6 @@ void ACodec::notifyOfRenderedFrames(bool dropIncomplete, FrameRenderTracker::Inf
     }
 
     mCallback->onOutputFramesRendered(done);
-}
-
-void ACodec::onFirstTunnelFrameReady() {
-    mCallback->onFirstTunnelFrameReady();
 }
 
 ACodec::BufferInfo *ACodec::dequeueBufferFromNativeWindow() {
@@ -2258,12 +2237,6 @@ status_t ACodec::configureCodec(
             }
             err = setupG711Codec(encoder, sampleRate, numChannels);
         }
-    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_OPUS)) {
-        int32_t numChannels = 1, sampleRate = 48000;
-        if (msg->findInt32("channel-count", &numChannels) &&
-            msg->findInt32("sample-rate", &sampleRate)) {
-            err = setupOpusCodec(encoder, sampleRate, numChannels);
-        }
     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_FLAC)) {
         // numChannels needs to be set to properly communicate PCM values.
         int32_t numChannels = 2, sampleRate = 44100, compressionLevel = -1;
@@ -2348,12 +2321,6 @@ status_t ACodec::configureCodec(
         mChannelMaskPresent = true;
     } else {
         mChannelMaskPresent = false;
-    }
-
-    int32_t isCorruptFree = 0;
-    if (msg->findInt32("corrupt-free", &isCorruptFree)) {
-        mIsStreamCorruptFree = isCorruptFree == 1 ? true : false;
-        ALOGV("corrupt-free=[%d]", mIsStreamCorruptFree);
     }
 
     int32_t maxInputSize;
@@ -2442,7 +2409,6 @@ status_t ACodec::setLowLatency(int32_t lowLatency) {
     if (err != OK) {
         ALOGE("decoder can not set low-latency to %d (err %d)", lowLatency, err);
     }
-    mIsLowLatency = (lowLatency && err == OK);
     return err;
 }
 
@@ -2467,30 +2433,6 @@ status_t ACodec::getLatency(uint32_t *latency) {
     if (err == OK) {
         *latency = config.nU32;
     }
-    return err;
-}
-
-status_t ACodec::setTunnelPeek(int32_t tunnelPeek) {
-    if (mIsEncoder) {
-        ALOGE("encoder does not support %s", TUNNEL_PEEK_KEY);
-        return BAD_VALUE;
-    }
-    if (!mTunneled) {
-        ALOGE("%s is only supported in tunnel mode", TUNNEL_PEEK_KEY);
-        return BAD_VALUE;
-    }
-
-    OMX_CONFIG_BOOLEANTYPE config;
-    InitOMXParams(&config);
-    config.bEnabled = (OMX_BOOL)(tunnelPeek != 0);
-    status_t err = mOMXNode->setConfig(
-            (OMX_INDEXTYPE)OMX_IndexConfigAndroidTunnelPeek,
-            &config, sizeof(config));
-    if (err != OK) {
-        ALOGE("decoder cannot set %s to %d (err %d)",
-              TUNNEL_PEEK_KEY, tunnelPeek, err);
-    }
-
     return err;
 }
 
@@ -2660,15 +2602,15 @@ status_t ACodec::configureTemporalLayers(
     unsigned int numLayers = 0;
     unsigned int numBLayers = 0;
     int tags;
-    char tmp;
+    char dummy;
     OMX_VIDEO_ANDROID_TEMPORALLAYERINGPATTERNTYPE pattern =
         OMX_VIDEO_AndroidTemporalLayeringPatternNone;
-    if (sscanf(tsSchema.c_str(), "webrtc.vp8.%u-layer%c", &numLayers, &tmp) == 1
+    if (sscanf(tsSchema.c_str(), "webrtc.vp8.%u-layer%c", &numLayers, &dummy) == 1
             && numLayers > 0) {
         pattern = OMX_VIDEO_AndroidTemporalLayeringPatternWebRTC;
     } else if ((tags = sscanf(tsSchema.c_str(), "android.generic.%u%c%u%c",
-                    &numLayers, &tmp, &numBLayers, &tmp))
-            && (tags == 1 || (tags == 3 && tmp == '+'))
+                    &numLayers, &dummy, &numBLayers, &dummy))
+            && (tags == 1 || (tags == 3 && dummy == '+'))
             && numLayers > 0 && numLayers < UINT32_MAX - numBLayers) {
         numLayers += numBLayers;
         pattern = OMX_VIDEO_AndroidTemporalLayeringPatternAndroid;
@@ -3166,26 +3108,6 @@ status_t ACodec::setupG711Codec(bool encoder, int32_t sampleRate, int32_t numCha
 
     return setupRawAudioFormat(
             kPortIndexInput, sampleRate, numChannels);
-}
-
-status_t ACodec::setupOpusCodec(bool encoder, int32_t sampleRate, int32_t numChannels) {
-    if (encoder) {
-        return INVALID_OPERATION;
-    }
-    OMX_AUDIO_PARAM_ANDROID_OPUSTYPE def;
-    InitOMXParams(&def);
-    def.nPortIndex = kPortIndexInput;
-    status_t err = mOMXNode->getParameter(
-            (OMX_INDEXTYPE)OMX_IndexParamAudioAndroidOpus, &def, sizeof(def));
-    if (err != OK) {
-        ALOGE("setupOpusCodec(): Error %d getting OMX_IndexParamAudioAndroidOpus parameter", err);
-        return err;
-    }
-    def.nSampleRate = sampleRate;
-    def.nChannels = numChannels;
-    err = mOMXNode->setParameter(
-           (OMX_INDEXTYPE)OMX_IndexParamAudioAndroidOpus, &def, sizeof(def));
-    return err;
 }
 
 status_t ACodec::setupFlacCodec(
@@ -4205,29 +4127,6 @@ status_t ACodec::setupVideoEncoder(
         ALOGI("setupVideoEncoder succeeded");
     }
 
-    // Video should be encoded as stand straight because RTP protocol
-    // can provide rotation information only if CVO is supported.
-    // This needs to be added to support non-CVO case for video streaming scenario.
-    int32_t rotation = 0;
-    if (msg->findInt32("rotation-degrees", &rotation)) {
-        OMX_CONFIG_ROTATIONTYPE config;
-        InitOMXParams(&config);
-        config.nPortIndex = kPortIndexOutput;
-        status_t err = mOMXNode->getConfig(
-                (OMX_INDEXTYPE)OMX_IndexConfigCommonRotate, &config, sizeof(config));
-        if (err != OK) {
-            ALOGW("Failed to getConfig of OMX_IndexConfigCommonRotate(err %d)", err);
-        }
-        config.nRotation = rotation;
-        err = mOMXNode->setConfig(
-                (OMX_INDEXTYPE)OMX_IndexConfigCommonRotate, &config, sizeof(config));
-
-        ALOGD("Applying encoder-rotation=[%d] to video encoder.", config.nRotation);
-        if (err != OK) {
-            ALOGW("Failed to setConfig of OMX_IndexConfigCommonRotate(err %d)", err);
-        }
-    }
-
     return err;
 }
 
@@ -4858,15 +4757,15 @@ status_t ACodec::setupVPXEncoderParameters(const sp<AMessage> &msg, sp<AMessage>
         unsigned int numLayers = 0;
         unsigned int numBLayers = 0;
         int tags;
-        char tmp;
-        if (sscanf(tsSchema.c_str(), "webrtc.vp8.%u-layer%c", &numLayers, &tmp) == 1
+        char dummy;
+        if (sscanf(tsSchema.c_str(), "webrtc.vp8.%u-layer%c", &numLayers, &dummy) == 1
                 && numLayers > 0) {
             pattern = OMX_VIDEO_VPXTemporalLayerPatternWebRTC;
             tsType = OMX_VIDEO_AndroidTemporalLayeringPatternWebRTC;
             tsLayers = numLayers;
         } else if ((tags = sscanf(tsSchema.c_str(), "android.generic.%u%c%u%c",
-                        &numLayers, &tmp, &numBLayers, &tmp))
-                && (tags == 1 || (tags == 3 && tmp == '+'))
+                        &numLayers, &dummy, &numBLayers, &dummy))
+                && (tags == 1 || (tags == 3 && dummy == '+'))
                 && numLayers > 0 && numLayers < UINT32_MAX - numBLayers) {
             pattern = OMX_VIDEO_VPXTemporalLayerPatternWebRTC;
             // VPX does not have a concept of B-frames, so just count all layers
@@ -5384,34 +5283,6 @@ status_t ACodec::getPortFormat(OMX_U32 portIndex, sp<AMessage> &notify) {
                     if (mChannelMaskPresent) {
                         notify->setInt32("channel-mask", mChannelMask);
                     }
-
-                    if (!mIsEncoder && portIndex == kPortIndexOutput) {
-                        AString mime;
-                        if (mConfigFormat->findString("mime", &mime)
-                                && !strcasecmp(MEDIA_MIMETYPE_AUDIO_AAC, mime.c_str())) {
-
-                            OMX_AUDIO_PARAM_ANDROID_AACDRCPRESENTATIONTYPE presentation;
-                            InitOMXParams(&presentation);
-                            err = mOMXNode->getParameter(
-                                    (OMX_INDEXTYPE)OMX_IndexParamAudioAndroidAacDrcPresentation,
-                                    &presentation, sizeof(presentation));
-                            if (err != OK) {
-                                return err;
-                            }
-                            notify->setInt32("aac-encoded-target-level",
-                                             presentation.nEncodedTargetLevel);
-                            notify->setInt32("aac-drc-cut-level", presentation.nDrcCut);
-                            notify->setInt32("aac-drc-boost-level", presentation.nDrcBoost);
-                            notify->setInt32("aac-drc-heavy-compression",
-                                             presentation.nHeavyCompression);
-                            notify->setInt32("aac-target-ref-level",
-                                             presentation.nTargetReferenceLevel);
-                            notify->setInt32("aac-drc-effect-type", presentation.nDrcEffectType);
-                            notify->setInt32("aac-drc-album-mode", presentation.nDrcAlbumMode);
-                            notify->setInt32("aac-drc-output-loudness",
-                                             presentation.nDrcOutputLoudness);
-                        }
-                    }
                     break;
                 }
 
@@ -5717,18 +5588,15 @@ void ACodec::onDataSpaceChanged(android_dataspace dataSpace, const ColorAspects 
     int32_t range, standard, transfer;
     convertCodecColorAspectsToPlatformAspects(aspects, &range, &standard, &transfer);
 
-    int32_t dsRange, dsStandard, dsTransfer;
-    getColorConfigFromDataSpace(dataSpace, &dsRange, &dsStandard, &dsTransfer);
-
     // if some aspects are unspecified, use dataspace fields
     if (range == 0) {
-        range = dsRange;
+        range = (dataSpace & HAL_DATASPACE_RANGE_MASK) >> HAL_DATASPACE_RANGE_SHIFT;
     }
     if (standard == 0) {
-        standard = dsStandard;
+        standard = (dataSpace & HAL_DATASPACE_STANDARD_MASK) >> HAL_DATASPACE_STANDARD_SHIFT;
     }
     if (transfer == 0) {
-        transfer = dsTransfer;
+        transfer = (dataSpace & HAL_DATASPACE_TRANSFER_MASK) >> HAL_DATASPACE_TRANSFER_SHIFT;
     }
 
     mOutputFormat = mOutputFormat->dup(); // trigger an output format changed event
@@ -5854,8 +5722,7 @@ status_t ACodec::requestIDRFrame() {
 
 ACodec::BaseState::BaseState(ACodec *codec, const sp<AState> &parentState)
     : AState(parentState),
-      mCodec(codec),
-      mPendingExtraOutputMetadataBufferRequest(false) {
+      mCodec(codec) {
 }
 
 ACodec::BaseState::PortMode ACodec::BaseState::getPortMode(
@@ -5899,19 +5766,17 @@ bool ACodec::BaseState::onMessageReceived(const sp<AMessage> &msg) {
 
         case ACodec::kWhatSetSurface:
         {
+            sp<AReplyToken> replyID;
+            CHECK(msg->senderAwaitsResponse(&replyID));
+
             sp<RefBase> obj;
             CHECK(msg->findObject("surface", &obj));
 
             status_t err = mCodec->handleSetSurface(static_cast<Surface *>(obj.get()));
 
-            sp<AReplyToken> replyID;
-            if (msg->senderAwaitsResponse(&replyID)) {
-                sp<AMessage> response = new AMessage;
-                response->setInt32("err", err);
-                response->postReply(replyID);
-            } else if (err != OK) {
-                mCodec->signalError(OMX_ErrorUndefined, err);
-            }
+            sp<AMessage> response = new AMessage;
+            response->setInt32("err", err);
+            response->postReply(replyID);
             break;
         }
 
@@ -5955,21 +5820,6 @@ bool ACodec::BaseState::onMessageReceived(const sp<AMessage> &msg) {
 
         case kWhatCheckIfStuck: {
             ALOGV("No-op by default");
-            break;
-        }
-
-        case kWhatSubmitExtraOutputMetadataBuffer: {
-            mPendingExtraOutputMetadataBufferRequest = false;
-            if (getPortMode(kPortIndexOutput) == RESUBMIT_BUFFERS && mCodec->mIsLowLatency) {
-                // Decoders often need more than one output buffer to be
-                // submitted before processing a single input buffer.
-                // For low latency codecs, we don't want to wait for more input
-                // to be queued to get those output buffers submitted.
-                if (mCodec->submitOutputMetadataBuffer() == OK
-                        && mCodec->mMetadataBuffersToSubmit > 0) {
-                    maybePostExtraOutputMetadataBufferRequest();
-                }
-            }
             break;
         }
 
@@ -6124,12 +5974,6 @@ bool ACodec::BaseState::onOMXEvent(
         return false;
     }
 
-    if (mCodec->mIsStreamCorruptFree && data1 == (OMX_U32)OMX_ErrorStreamCorrupt) {
-        ALOGV("[%s] handle OMX_ErrorStreamCorrupt as a normal operation",
-                mCodec->mComponentName.c_str());
-        return true;
-    }
-
     ALOGE("[%s] ERROR(0x%08x)", mCodec->mComponentName.c_str(), data1);
 
     // verify OMX component sends back an error we expect.
@@ -6237,13 +6081,6 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
         return;
     }
 
-    int32_t cvo;
-    if (mCodec->mNativeWindow != NULL && buffer != NULL &&
-            buffer->meta()->findInt32("cvo", &cvo)) {
-        ALOGV("cvo(%d) found in buffer #%u", cvo, bufferID);
-        setNativeWindowRotation(mCodec->mNativeWindow.get(), cvo);
-    }
-
     info->mStatus = BufferInfo::OWNED_BY_US;
     info->mData = buffer;
 
@@ -6342,12 +6179,7 @@ void ACodec::BaseState::onInputBufferFilled(const sp<AMessage> &msg) {
                             (outputMode == FREE_BUFFERS ? "FREE" :
                              outputMode == KEEP_BUFFERS ? "KEEP" : "RESUBMIT"));
                     if (outputMode == RESUBMIT_BUFFERS) {
-                        status_t err = mCodec->submitOutputMetadataBuffer();
-                        if (mCodec->mIsLowLatency
-                                && err == OK
-                                && mCodec->mMetadataBuffersToSubmit > 0) {
-                            maybePostExtraOutputMetadataBufferRequest();
-                        }
+                        mCodec->submitOutputMetadataBuffer();
                     }
                 }
                 info->checkReadFence("onInputBufferFilled");
@@ -6897,7 +6729,6 @@ bool ACodec::UninitializedState::onAllocateComponent(const sp<AMessage> &msg) {
     ALOGV("onAllocateComponent");
 
     CHECK(mCodec->mOMXNode == NULL);
-    mCodec->mFatalError = false;
 
     sp<AMessage> notify = new AMessage(kWhatOMXMessageList, mCodec);
     notify->setInt32("generation", mCodec->mNodeGeneration + 1);
@@ -7116,9 +6947,10 @@ status_t ACodec::LoadedState::setupInputSurface() {
         return err;
     }
 
+    using hardware::media::omx::V1_0::utils::TWOmxNode;
     err = statusFromBinderStatus(
             mCodec->mGraphicBufferSource->configure(
-                    mCodec->mOMXNode->getHalInterface<IOmxNode>(),
+                    new TWOmxNode(mCodec->mOMXNode),
                     static_cast<hardware::graphics::common::V1_0::Dataspace>(dataSpace)));
     if (err != OK) {
         ALOGE("[%s] Unable to configure for node (err %d)",
@@ -7493,9 +7325,6 @@ void ACodec::ExecutingState::submitOutputMetaBuffers() {
                 break;
         }
     }
-    if (mCodec->mIsLowLatency) {
-        maybePostExtraOutputMetadataBufferRequest();
-    }
 
     // *** NOTE: THE FOLLOWING WORKAROUND WILL BE REMOVED ***
     mCodec->signalSubmitOutputMetadataBufferIfEOS_workaround();
@@ -7802,8 +7631,8 @@ status_t ACodec::setParameters(const sp<AMessage> &params) {
         mInputFormat->setInt64("android._stop-time-offset-us", stopTimeOffsetUs);
     }
 
-    int32_t tmp;
-    if (params->findInt32("request-sync", &tmp)) {
+    int32_t dummy;
+    if (params->findInt32("request-sync", &dummy)) {
         status_t err = requestIDRFrame();
 
         if (err != OK) {
@@ -7874,67 +7703,6 @@ status_t ACodec::setParameters(const sp<AMessage> &params) {
 
     // Ignore errors as failure is expected for codecs that aren't video encoders.
     (void)configureTemporalLayers(params, false /* inConfigure */, mOutputFormat);
-
-    AString mime;
-    if (!mIsEncoder
-            && (mConfigFormat->findString("mime", &mime))
-            && !strcasecmp(MEDIA_MIMETYPE_AUDIO_AAC, mime.c_str())) {
-        OMX_AUDIO_PARAM_ANDROID_AACDRCPRESENTATIONTYPE presentation;
-        InitOMXParams(&presentation);
-        mOMXNode->getParameter(
-                    (OMX_INDEXTYPE)OMX_IndexParamAudioAndroidAacDrcPresentation,
-                    &presentation, sizeof(presentation));
-        int32_t value32 = 0;
-        bool updated = false;
-        if (params->findInt32("aac-pcm-limiter-enable", &value32)) {
-            presentation.nPCMLimiterEnable = value32;
-            updated = true;
-        }
-        if (params->findInt32("aac-encoded-target-level", &value32)) {
-            presentation.nEncodedTargetLevel = value32;
-            updated = true;
-        }
-        if (params->findInt32("aac-drc-cut-level", &value32)) {
-            presentation.nDrcCut = value32;
-            updated = true;
-        }
-        if (params->findInt32("aac-drc-boost-level", &value32)) {
-            presentation.nDrcBoost = value32;
-            updated = true;
-        }
-        if (params->findInt32("aac-drc-heavy-compression", &value32)) {
-            presentation.nHeavyCompression = value32;
-            updated = true;
-        }
-        if (params->findInt32("aac-target-ref-level", &value32)) {
-            presentation.nTargetReferenceLevel = value32;
-            updated = true;
-        }
-        if (params->findInt32("aac-drc-effect-type", &value32)) {
-            presentation.nDrcEffectType = value32;
-            updated = true;
-        }
-        if (params->findInt32("aac-drc-album-mode", &value32)) {
-            presentation.nDrcAlbumMode = value32;
-            updated = true;
-        }
-        if (!params->findInt32("aac-drc-output-loudness", &value32)) {
-            presentation.nDrcOutputLoudness = value32;
-            updated = true;
-        }
-        if (updated) {
-            mOMXNode->setParameter((OMX_INDEXTYPE)OMX_IndexParamAudioAndroidAacDrcPresentation,
-                &presentation, sizeof(presentation));
-        }
-    }
-
-    int32_t tunnelPeek = 0;
-    if (params->findInt32(TUNNEL_PEEK_KEY, &tunnelPeek)) {
-        status_t err = setTunnelPeek(tunnelPeek);
-        if (err != OK) {
-            return err;
-        }
-    }
 
     return setVendorParameters(params);
 }
@@ -8401,12 +8169,6 @@ bool ACodec::ExecutingState::onOMXEvent(
             return true;
         }
 
-        case OMX_EventOnFirstTunnelFrameReady:
-        {
-            mCodec->onFirstTunnelFrameReady();
-            return true;
-        }
-
         default:
             return BaseState::onOMXEvent(event, data1, data2);
     }
@@ -8445,34 +8207,13 @@ bool ACodec::OutputPortSettingsChangedState::onMessageReceived(
             FALLTHROUGH_INTENDED;
         }
         case kWhatResume:
-        {
-            ALOGV("[%s] Deferring resume", mCodec->mComponentName.c_str());
-
-            mCodec->deferMessage(msg);
-            handled = true;
-            break;
-        }
-
         case kWhatSetParameters:
         {
-            sp<AMessage> params;
-            CHECK(msg->findMessage("params", &params));
-
-            sp<ABuffer> hdr10PlusInfo;
-            if (params->findBuffer("hdr10-plus-info", &hdr10PlusInfo)) {
-                if (hdr10PlusInfo != nullptr && hdr10PlusInfo->size() > 0) {
-                    (void)mCodec->setHdr10PlusInfo(hdr10PlusInfo);
-                }
-                params->removeEntryAt(params->findEntryByName("hdr10-plus-info"));
-
-                if (params->countEntries() == 0) {
-                    msg->removeEntryAt(msg->findEntryByName("params"));
-                }
+            if (msg->what() == kWhatResume) {
+                ALOGV("[%s] Deferring resume", mCodec->mComponentName.c_str());
             }
 
-            if (msg->countEntries() > 0) {
-                mCodec->deferMessage(msg);
-            }
+            mCodec->deferMessage(msg);
             handled = true;
             break;
         }
@@ -8482,23 +8223,6 @@ bool ACodec::OutputPortSettingsChangedState::onMessageReceived(
             int32_t generation = 0;
             CHECK(msg->findInt32("generation", &generation));
             mCodec->forceStateTransition(generation);
-
-            handled = true;
-            break;
-        }
-
-        case kWhatSetSurface:
-        {
-            ALOGV("[%s] Deferring setSurface", mCodec->mComponentName.c_str());
-
-            sp<AReplyToken> replyID;
-            CHECK(msg->senderAwaitsResponse(&replyID));
-
-            mCodec->deferMessage(msg);
-
-            sp<AMessage> response = new AMessage;
-            response->setInt32("err", OK);
-            response->postReply(replyID);
 
             handled = true;
             break;
@@ -8602,15 +8326,6 @@ bool ACodec::OutputPortSettingsChangedState::onOMXEvent(
             }
 
             return false;
-        }
-
-        case OMX_EventConfigUpdate:
-        {
-            CHECK_EQ(data1, (OMX_U32)kPortIndexOutput);
-
-            mCodec->onConfigUpdate((OMX_INDEXTYPE)data2);
-
-            return true;
         }
 
         default:

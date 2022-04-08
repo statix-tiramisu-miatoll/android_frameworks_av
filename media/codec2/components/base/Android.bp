@@ -1,14 +1,5 @@
 // DO NOT DEPEND ON THIS DIRECTLY
 // use libcodec2_soft-defaults instead
-package {
-    // See: http://go/android-license-faq
-    // A large-scale-change added 'default_applicable_licenses' to import
-    // all of the 'license_kinds' from "frameworks_av_license"
-    // to get the below license kinds:
-    //   SPDX-license-identifier-Apache-2.0
-    default_applicable_licenses: ["frameworks_av_license"],
-}
-
 cc_library {
     name: "libcodec2_soft_common",
     defaults: ["libcodec2-impl-defaults"],
@@ -29,7 +20,7 @@ cc_library {
 
     shared_libs: [
         "libcutils", // for properties
-        "liblog", // for ALOG
+        "liblog",    // for ALOG
         "libsfplugin_ccodec_utils", // for ImageCopy
         "libstagefright_foundation", // for Mutexed
     ],
@@ -47,7 +38,7 @@ cc_library {
 
 filegroup {
     name: "codec2_soft_exports",
-    srcs: ["exports.lds"],
+    srcs: [ "exports.lds" ],
 }
 
 // public dependency for software codec implementation
@@ -100,17 +91,7 @@ cc_defaults {
         misc_undefined: [
             "signed-integer-overflow",
         ],
-    },
-}
-
-cc_defaults {
-    name: "libcodec2_soft_sanitize_cfi-defaults",
-
-    sanitize: {
         cfi: true,
-        config: {
-            cfi_assembly_support: true,
-        },
     },
 }
 
@@ -150,3 +131,4 @@ cc_library {
 
     ldflags: ["-Wl,-Bsymbolic"],
 }
+

@@ -22,7 +22,6 @@
 
 #include <media/AudioSystem.h>
 #include <media/IMediaRecorder.h>
-#include <android/content/AttributionSourceState.h>
 
 #include <vector>
 
@@ -87,20 +86,20 @@ public:
     virtual     status_t   setPreferredMicrophoneDirection(audio_microphone_direction_t direction);
     virtual     status_t   setPreferredMicrophoneFieldDimension(float zoom);
                 status_t   getPortId(audio_port_handle_t *portId) override;
-    virtual     status_t   getRtpDataUsage(uint64_t *bytes);
 
 private:
     friend class           MediaPlayerService;  // for accessing private constructor
 
                            MediaRecorderClient(
                                    const sp<MediaPlayerService>& service,
-                                   const content::AttributionSourceState& attributionSource);
+                                                               pid_t pid,
+                                                               const String16& opPackageName);
     virtual                ~MediaRecorderClient();
 
     std::vector<DeathNotifier> mDeathNotifiers;
     sp<AudioDeviceUpdatedNotifier> mAudioDeviceUpdatedNotifier;
 
-    content::AttributionSourceState mAttributionSource;
+    pid_t                  mPid;
     mutable Mutex          mLock;
     MediaRecorderBase      *mRecorder;
     sp<MediaPlayerService> mMediaPlayerService;

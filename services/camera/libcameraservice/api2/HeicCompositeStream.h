@@ -45,10 +45,8 @@ public:
 
     status_t createInternalStreams(const std::vector<sp<Surface>>& consumers,
             bool hasDeferredConsumer, uint32_t width, uint32_t height, int format,
-            camera_stream_rotation_t rotation, int *id, const String8& physicalCameraId,
-            const std::unordered_set<int32_t> &sensorPixelModesUsed,
-            std::vector<int> *surfaceIds,
-            int streamSetId, bool isShared) override;
+            camera3_stream_rotation_t rotation, int *id, const String8& physicalCameraId,
+            std::vector<int> *surfaceIds, int streamSetId, bool isShared) override;
 
     status_t deleteInternalStreams() override;
 
@@ -255,6 +253,7 @@ private:
 
     // Keep all incoming APP segment Blob buffer pending further processing.
     std::vector<int64_t> mInputAppSegmentBuffers;
+    int32_t           mLockedAppSegmentBufferCnt;
 
     // Keep all incoming HEIC blob buffer pending further processing.
     std::vector<CodecOutputBufferInfo> mCodecOutputBuffers;

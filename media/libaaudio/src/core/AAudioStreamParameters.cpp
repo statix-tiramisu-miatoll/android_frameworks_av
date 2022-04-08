@@ -25,7 +25,8 @@ using namespace aaudio;
 
 // TODO These defines should be moved to a central place in audio.
 #define SAMPLES_PER_FRAME_MIN        1
-#define SAMPLES_PER_FRAME_MAX        FCC_LIMIT
+// TODO Remove 8 channel limitation.
+#define SAMPLES_PER_FRAME_MAX        FCC_8
 #define SAMPLE_RATE_HZ_MIN           8000
 // HDMI supports up to 32 channels at 1536000 Hz.
 #define SAMPLE_RATE_HZ_MAX           1600000
@@ -47,17 +48,13 @@ void AAudioStreamParameters::copyFrom(const AAudioStreamParameters &other) {
     mInputPreset          = other.mInputPreset;
     mAllowedCapturePolicy = other.mAllowedCapturePolicy;
     mIsPrivacySensitive   = other.mIsPrivacySensitive;
-    mOpPackageName        = other.mOpPackageName;
-    mAttributionTag       = other.mAttributionTag;
 }
 
 static aaudio_result_t isFormatValid(audio_format_t format) {
     switch (format) {
         case AUDIO_FORMAT_DEFAULT:
         case AUDIO_FORMAT_PCM_16_BIT:
-        case AUDIO_FORMAT_PCM_32_BIT:
         case AUDIO_FORMAT_PCM_FLOAT:
-        case AUDIO_FORMAT_PCM_24_BIT_PACKED:
             break; // valid
         default:
             ALOGD("audioFormat not valid, audio_format_t = 0x%08x", format);
@@ -204,8 +201,4 @@ void AAudioStreamParameters::dump() const {
     ALOGD("mInputPreset          = %6d", mInputPreset);
     ALOGD("mAllowedCapturePolicy = %6d", mAllowedCapturePolicy);
     ALOGD("mIsPrivacySensitive   = %s", mIsPrivacySensitive ? "true" : "false");
-    ALOGD("mOpPackageName        = %s", !mOpPackageName.has_value() ?
-        "(null)" : mOpPackageName.value().c_str());
-    ALOGD("mAttributionTag       = %s", !mAttributionTag.has_value() ?
-        "(null)" : mAttributionTag.value().c_str());
 }

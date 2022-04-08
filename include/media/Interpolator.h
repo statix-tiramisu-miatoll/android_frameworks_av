@@ -21,7 +21,6 @@
 #include <sstream>
 #include <unordered_map>
 
-#include <android/media/InterpolatorConfig.h>
 #include <binder/Parcel.h>
 #include <utils/RefBase.h>
 
@@ -40,10 +39,17 @@ template <typename S, typename T>
 class Interpolator : public std::map<S, T> {
 public:
     // Polynomial spline interpolators
-    using InterpolatorType  = media::InterpolatorType;
+    // Extend only at the end of enum, as this must match order in VolumeShapers.java.
+    enum InterpolatorType : int32_t {
+        INTERPOLATOR_TYPE_STEP,   // Not continuous
+        INTERPOLATOR_TYPE_LINEAR, // C0
+        INTERPOLATOR_TYPE_CUBIC,  // C1
+        INTERPOLATOR_TYPE_CUBIC_MONOTONIC, // C1 (to provide locally monotonic curves)
+        // INTERPOLATOR_TYPE_CUBIC_C2, // TODO - requires global computation / cache
+    };
 
     explicit Interpolator(
-            InterpolatorType interpolatorType = InterpolatorType::CUBIC,
+            InterpolatorType interpolatorType = INTERPOLATOR_TYPE_LINEAR,
             bool cache = true)
         : mCache(cache)
         , mFirstSlope(0)
@@ -76,13 +82,13 @@ public:
 
         // now that we have two adjacent points:
         switch (mInterpolatorType) {
-        case InterpolatorType::STEP:
+        case INTERPOLATOR_TYPE_STEP:
             return high->first == x ? high->second : low->second;
-        case InterpolatorType::LINEAR:
+        case INTERPOLATOR_TYPE_LINEAR:
             return ((high->first - x) * low->second + (x - low->first) * high->second)
                     / (high->first - low->first);
-        case InterpolatorType::CUBIC:
-        case InterpolatorType::CUBIC_MONOTONIC:
+        case INTERPOLATOR_TYPE_CUBIC:
+        case INTERPOLATOR_TYPE_CUBIC_MONOTONIC:
         default: {
             // See https://en.wikipedia.org/wiki/Cubic_Hermite_spline
 
@@ -110,7 +116,7 @@ public:
             // non catmullRom (finite difference) with regular cubic;
             // the choices here minimize computation.
             bool monotonic, catmullRom;
-            if (mInterpolatorType == InterpolatorType::CUBIC_MONOTONIC) {
+            if (mInterpolatorType == INTERPOLATOR_TYPE_CUBIC_MONOTONIC) {
                 monotonic = true;
                 catmullRom = false;
             } else {
@@ -196,11 +202,11 @@ public:
 
     status_t setInterpolatorType(InterpolatorType interpolatorType) {
         switch (interpolatorType) {
-        case InterpolatorType::STEP:   // Not continuous
-        case InterpolatorType::LINEAR: // C0
-        case InterpolatorType::CUBIC:  // C1
-        case InterpolatorType::CUBIC_MONOTONIC: // C1 + other constraints
-        // case InterpolatorType::CUBIC_C2:
+        case INTERPOLATOR_TYPE_STEP:   // Not continuous
+        case INTERPOLATOR_TYPE_LINEAR: // C0
+        case INTERPOLATOR_TYPE_CUBIC:  // C1
+        case INTERPOLATOR_TYPE_CUBIC_MONOTONIC: // C1 + other constraints
+        // case INTERPOLATOR_TYPE_CUBIC_C2:
             mInterpolatorType = interpolatorType;
             return NO_ERROR;
         default:
@@ -229,50 +235,49 @@ public:
         mMemo.clear();
     }
 
-    // TODO(ytai): remove this method once it is not used.
     status_t writeToParcel(Parcel *parcel) const {
-        media::InterpolatorConfig config;
-        writeToConfig(&config);
-        return config.writeToParcel(parcel);
-    }
-
-    void writeToConfig(media::InterpolatorConfig *config) const {
-        config->type = mInterpolatorType;
-        config->firstSlope = mFirstSlope;
-        config->lastSlope = mLastSlope;
-        for (const auto &pt : *this) {
-            config->xy.push_back(pt.first);
-            config->xy.push_back(pt.second);
+        if (parcel == nullptr) {
+            return BAD_VALUE;
         }
-    }
-
-    // TODO(ytai): remove this method once it is not used.
-    status_t readFromParcel(const Parcel &parcel) {
-        media::InterpolatorConfig config;
-        status_t res = config.readFromParcel(&parcel);
+        status_t res = parcel->writeInt32(mInterpolatorType)
+                ?: parcel->writeFloat(mFirstSlope)
+                ?: parcel->writeFloat(mLastSlope)
+                ?: parcel->writeUint32((uint32_t)this->size()); // silent truncation
         if (res != NO_ERROR) {
             return res;
         }
-        return readFromConfig(config);
+        for (const auto &pt : *this) {
+            res = parcel->writeFloat(pt.first)
+                    ?: parcel->writeFloat(pt.second);
+            if (res != NO_ERROR) {
+                return res;
+            }
+        }
+        return NO_ERROR;
     }
 
-    status_t readFromConfig(const media::InterpolatorConfig &config) {
+    status_t readFromParcel(const Parcel &parcel) {
         this->clear();
-        setInterpolatorType(config.type);
-        if ((config.xy.size() & 1) != 0) {
-            // xy size must be even.
-            return BAD_VALUE;
+        int32_t type;
+        uint32_t size;
+        status_t res = parcel.readInt32(&type)
+                        ?: parcel.readFloat(&mFirstSlope)
+                        ?: parcel.readFloat(&mLastSlope)
+                        ?: parcel.readUint32(&size)
+                        ?: setInterpolatorType((InterpolatorType)type);
+        if (res != NO_ERROR) {
+            return res;
         }
-        uint32_t size = config.xy.size() / 2;
-        mFirstSlope = config.firstSlope;
-        mLastSlope = config.lastSlope;
-
         // Note: We don't need to check size is within some bounds as
         // the Parcel read will fail if size is incorrectly specified too large.
         float lastx;
         for (uint32_t i = 0; i < size; ++i) {
-            float x = config.xy[i * 2];
-            float y = config.xy[i * 2 + 1];
+            float x, y;
+            res = parcel.readFloat(&x)
+                    ?: parcel.readFloat(&y);
+            if (res != NO_ERROR) {
+                return res;
+            }
             if ((i > 0 && !(x > lastx)) /* handle nan */
                     || y != y /* handle nan */) {
                 // This is a std::map object which imposes sorted order

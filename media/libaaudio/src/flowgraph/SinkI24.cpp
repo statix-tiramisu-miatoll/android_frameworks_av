@@ -15,7 +15,7 @@
  */
 
 #include <algorithm>
-#include <stdint.h>
+#include <unistd.h>
 
 #ifdef __ANDROID__
 #include <audio_utils/primitives.h>
@@ -25,6 +25,7 @@
 #include "SinkI24.h"
 
 using namespace flowgraph;
+
 
 SinkI24::SinkI24(int32_t channelCount)
         : AudioSink(channelCount) {}

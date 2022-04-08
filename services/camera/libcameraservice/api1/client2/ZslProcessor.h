@@ -125,7 +125,7 @@ class ZslProcessor :
     static const int32_t kDefaultMaxPipelineDepth = 4;
     size_t mBufferQueueDepth;
     size_t mFrameListDepth;
-    std::vector<CameraMetadata> mFrameList;
+    Vector<CameraMetadata> mFrameList;
     size_t mFrameListHead;
 
     ZslPair mNextPair;

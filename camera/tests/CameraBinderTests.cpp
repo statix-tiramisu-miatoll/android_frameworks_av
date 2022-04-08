@@ -363,8 +363,7 @@ TEST(CameraServiceBinderTest, CheckBinderCameraService) {
 
         // Check metadata binder call
         CameraMetadata metadata;
-        res = service->getCameraCharacteristics(cameraId,
-                /*targetSdkVersion*/__ANDROID_API_FUTURE__, &metadata);
+        res = service->getCameraCharacteristics(cameraId, &metadata);
         EXPECT_TRUE(res.isOk()) << res;
         EXPECT_FALSE(metadata.isEmpty());
 
@@ -379,8 +378,8 @@ TEST(CameraServiceBinderTest, CheckBinderCameraService) {
         sp<TestCameraDeviceCallbacks> callbacks(new TestCameraDeviceCallbacks());
         sp<hardware::camera2::ICameraDeviceUser> device;
         res = service->connectDevice(callbacks, cameraId, String16("meeeeeeeee!"),
-                {}, hardware::ICameraService::USE_CALLING_UID, /*oomScoreOffset*/ 0,
-                /*targetSdkVersion*/__ANDROID_API_FUTURE__, /*out*/&device);
+                std::unique_ptr<String16>(), hardware::ICameraService::USE_CALLING_UID,
+                /*out*/&device);
         EXPECT_TRUE(res.isOk()) << res;
         ASSERT_NE(nullptr, device.get());
         device->disconnect();
@@ -422,8 +421,8 @@ protected:
         {
             SCOPED_TRACE("openNewDevice");
             binder::Status res = service->connectDevice(callbacks, deviceId, String16("meeeeeeeee!"),
-                    {}, hardware::ICameraService::USE_CALLING_UID, /*oomScoreOffset*/ 0,
-                    /*targetSdkVersion*/__ANDROID_API_FUTURE__, /*out*/&device);
+                    std::unique_ptr<String16>(), hardware::ICameraService::USE_CALLING_UID,
+                    /*out*/&device);
             EXPECT_TRUE(res.isOk()) << res;
         }
         auto p = std::make_pair(callbacks, device);
@@ -518,7 +517,7 @@ TEST_F(CameraClientBinderTest, CheckBinderCameraDeviceUser) {
         CameraMetadata sessionParams;
         std::vector<int> offlineStreamIds;
         res = device->endConfigure(/*isConstrainedHighSpeed*/ false, sessionParams,
-                ns2ms(systemTime()), &offlineStreamIds);
+                &offlineStreamIds);
         EXPECT_TRUE(res.isOk()) << res;
         EXPECT_FALSE(callbacks->hadError());
 
@@ -630,7 +629,7 @@ TEST_F(CameraClientBinderTest, CheckBinderCameraDeviceUser) {
         res = device->deleteStream(streamId);
         EXPECT_TRUE(res.isOk()) << res;
         res = device->endConfigure(/*isConstrainedHighSpeed*/ false, sessionParams,
-                ns2ms(systemTime()), &offlineStreamIds);
+                &offlineStreamIds);
         EXPECT_TRUE(res.isOk()) << res;
 
         sleep(/*second*/1); // allow some time for errors to show up, if any

@@ -22,8 +22,6 @@
 #include <mutex>
 #include <vector>
 
-#include <android-base/thread_annotations.h>
-
 #include "client/AudioStreamInternal.h"
 #include "client/AudioStreamInternalPlay.h"
 #include "core/AAudioStreamParameters.h"
@@ -43,17 +41,13 @@ class AAudioServiceEndpoint
         , public AAudioStreamParameters {
 public:
 
-    virtual ~AAudioServiceEndpoint();
+    virtual ~AAudioServiceEndpoint() = default;
 
     virtual std::string dump() const;
 
     virtual aaudio_result_t open(const aaudio::AAudioStreamRequest &request) = 0;
 
-    /*
-     * Perform any cleanup necessary before deleting the stream.
-     * This might include releasing and closing internal streams.
-     */
-    virtual void close() = 0;
+    virtual aaudio_result_t close() = 0;
 
     aaudio_result_t registerStream(android::sp<AAudioServiceStreamBase> stream);
 
@@ -143,8 +137,7 @@ protected:
     std::vector<android::sp<AAudioServiceStreamBase>> disconnectRegisteredStreams();
 
     mutable std::mutex       mLockStreams;
-    std::vector<android::sp<AAudioServiceStreamBase>> mRegisteredStreams
-            GUARDED_BY(mLockStreams);
+    std::vector<android::sp<AAudioServiceStreamBase>> mRegisteredStreams;
 
     SimpleDoubleBuffer<Timestamp>  mAtomicEndpointTimestamp;
 

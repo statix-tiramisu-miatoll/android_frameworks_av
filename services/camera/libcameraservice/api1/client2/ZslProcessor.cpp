@@ -42,9 +42,6 @@ typedef android::RingBufferConsumer::PinnedBufferItem PinnedBufferItem;
 namespace android {
 namespace camera2 {
 
-using android::camera3::CAMERA_STREAM_ROTATION_0;
-using android::camera3::CAMERA_TEMPLATE_STILL_CAPTURE;
-
 namespace {
 struct TimestampFinder : public RingBufferConsumer::RingBufferComparator {
     typedef RingBufferConsumer::BufferInfo BufferInfo;
@@ -175,7 +172,7 @@ ZslProcessor::ZslProcessor(
     mBufferQueueDepth = mFrameListDepth + 1;
 
     mZslQueue.insertAt(0, mBufferQueueDepth);
-    mFrameList.resize(mFrameListDepth);
+    mFrameList.insertAt(0, mFrameListDepth);
     sp<CaptureSequencer> captureSequencer = mSequencer.promote();
     if (captureSequencer != 0) captureSequencer->setZslProcessor(this);
 }
@@ -211,7 +208,7 @@ void ZslProcessor::onResultAvailable(const CaptureResult &result) {
     // Corresponding buffer has been cleared. No need to push into mFrameList
     if (timestamp <= mLatestClearedBufferTimestamp) return;
 
-    mFrameList[mFrameListHead] = result.mMetadata;
+    mFrameList.editItemAt(mFrameListHead) = result.mMetadata;
     mFrameListHead = (mFrameListHead + 1) % mFrameListDepth;
 }
 
@@ -235,9 +232,9 @@ status_t ZslProcessor::updateStream(const Parameters &params) {
     }
 
     if (mInputStreamId == NO_STREAM) {
-        res = device->createInputStream(params.fastInfo.usedZslSize.width,
-            params.fastInfo.usedZslSize.height, HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED,
-            /*isMultiResolution*/false, &mInputStreamId);
+        res = device->createInputStream(params.fastInfo.maxZslSize.width,
+            params.fastInfo.maxZslSize.height, HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED,
+            &mInputStreamId);
         if (res != OK) {
             ALOGE("%s: Camera %d: Can't create input stream: "
                     "%s (%d)", __FUNCTION__, client->getCameraId(),
@@ -258,10 +255,10 @@ status_t ZslProcessor::updateStream(const Parameters &params) {
         mProducer->setName(String8("Camera2-ZslRingBufferConsumer"));
         sp<Surface> outSurface = new Surface(producer);
 
-        res = device->createStream(outSurface, params.fastInfo.usedZslSize.width,
-            params.fastInfo.usedZslSize.height, HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED,
-            HAL_DATASPACE_UNKNOWN, CAMERA_STREAM_ROTATION_0, &mZslStreamId,
-            String8(), std::unordered_set<int32_t>{ANDROID_SENSOR_PIXEL_MODE_DEFAULT});
+        res = device->createStream(outSurface, params.fastInfo.maxZslSize.width,
+            params.fastInfo.maxZslSize.height, HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED,
+            HAL_DATASPACE_UNKNOWN, CAMERA3_STREAM_ROTATION_0, &mZslStreamId,
+            String8());
         if (res != OK) {
             ALOGE("%s: Camera %d: Can't create ZSL stream: "
                     "%s (%d)", __FUNCTION__, client->getCameraId(),
@@ -351,7 +348,7 @@ status_t ZslProcessor::updateRequestWithDefaultStillRequest(CameraMetadata &requ
     }
 
     CameraMetadata stillTemplate;
-    device->createDefaultRequest(CAMERA_TEMPLATE_STILL_CAPTURE, &stillTemplate);
+    device->createDefaultRequest(CAMERA3_TEMPLATE_STILL_CAPTURE, &stillTemplate);
 
     // Find some of the post-processing tags, and assign the value from template to the request.
     // Only check the aberration mode and noise reduction mode for now, as they are very important
@@ -674,7 +671,7 @@ status_t ZslProcessor::clearZslQueueLocked() {
 void ZslProcessor::clearZslResultQueueLocked() {
     mFrameList.clear();
     mFrameListHead = 0;
-    mFrameList.resize(mFrameListDepth);
+    mFrameList.insertAt(0, mFrameListDepth);
 }
 
 void ZslProcessor::dump(int fd, const Vector<String16>& /*args*/) const {

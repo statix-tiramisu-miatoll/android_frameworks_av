@@ -26,16 +26,19 @@
 /*  TIMER FUNCTION                                                                      */
 /****************************************************************************************/
 
-void LVM_Timer(LVM_Timer_Instance_t* pInstance, LVM_INT16 BlockSize) {
-    LVM_Timer_Instance_Private_t* pInstancePr;
-    pInstancePr = (LVM_Timer_Instance_Private_t*)pInstance;
+void LVM_Timer      (   LVM_Timer_Instance_t       *pInstance,
+                        LVM_INT16                  BlockSize ){
 
-    if (pInstancePr->TimerArmed) {
+    LVM_Timer_Instance_Private_t *pInstancePr;
+    pInstancePr = (LVM_Timer_Instance_Private_t *)pInstance;
+
+    if (pInstancePr->TimerArmed){
         pInstancePr->RemainingTimeInSamples -= BlockSize;
-        if (pInstancePr->RemainingTimeInSamples <= 0) {
+        if (pInstancePr->RemainingTimeInSamples <= 0){
             pInstancePr->TimerArmed = 0;
-            (*pInstancePr->pCallBack)(pInstancePr->pCallbackInstance, pInstancePr->pCallBackParams,
-                                      pInstancePr->CallBackParam);
+            (*pInstancePr->pCallBack) ( pInstancePr->pCallbackInstance,
+                                        pInstancePr->pCallBackParams,
+                                        pInstancePr->CallBackParam );
         }
     }
 }

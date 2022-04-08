@@ -17,7 +17,7 @@
 #ifndef CLEARKEY_DRM_PLUGIN_H_
 #define CLEARKEY_DRM_PLUGIN_H_
 
-#include <android/hardware/drm/1.4/IDrmPlugin.h>
+#include <android/hardware/drm/1.2/IDrmPlugin.h>
 #include <android/hardware/drm/1.2/IDrmPluginListener.h>
 
 #include <map>
@@ -32,7 +32,7 @@
 namespace android {
 namespace hardware {
 namespace drm {
-namespace V1_4 {
+namespace V1_2 {
 namespace clearkey {
 
 namespace drm = ::android::hardware::drm;
@@ -50,12 +50,9 @@ using drm::V1_1::DrmMetricGroup;
 using drm::V1_1::HdcpLevel;
 using drm::V1_1::SecureStopRelease;
 using drm::V1_1::SecurityLevel;
+using drm::V1_2::IDrmPlugin;
 using drm::V1_2::KeySetId;
 using drm::V1_2::OfflineLicenseState;
-using drm::V1_4::clearkey::DeviceFiles;
-using drm::V1_4::clearkey::Session;
-using drm::V1_4::clearkey::SessionLibrary;
-using drm::V1_4::IDrmPlugin;
 
 using ::android::hardware::hidl_string;
 using ::android::hardware::hidl_vec;
@@ -201,18 +198,6 @@ struct DrmPlugin : public IDrmPlugin {
 
     Return<Status> setPropertyByteArray(
             const hidl_string& name, const hidl_vec<uint8_t>& value) override;
-
-    Return<void> getLogMessages(
-        getLogMessages_cb _hidl_cb) override;
-
-    Return<Status> setPlaybackId(
-        const hidl_vec<uint8_t>& sessionId,
-        const hidl_string& playbackId) override;
-
-    Return<bool> requiresSecureDecoder(
-            const hidl_string& mime, SecurityLevel level) override;
-
-    Return<bool> requiresSecureDecoderDefault(const hidl_string& mime) override;
 
     Return<Status> setCipherAlgorithm(
             const hidl_vec<uint8_t>& sessionId, const hidl_string& algorithm) {
@@ -413,7 +398,6 @@ private:
     std::map<std::string, std::string> mStringProperties;
     std::map<std::string, std::vector<uint8_t> > mByteArrayProperties;
     std::map<std::string, std::vector<uint8_t> > mReleaseKeysMap;
-    std::map<std::vector<uint8_t>, std::string> mPlaybackId;
     std::map<std::vector<uint8_t>, SecurityLevel> mSecurityLevel;
     sp<IDrmPluginListener> mListener;
     sp<IDrmPluginListener_V1_2> mListenerV1_2;
@@ -440,7 +424,7 @@ private:
 };
 
 } // namespace clearkey
-} // namespace V1_4
+} // namespace V1_2
 } // namespace drm
 } // namespace hardware
 } // namespace android

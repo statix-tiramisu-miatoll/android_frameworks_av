@@ -26,11 +26,9 @@
 #include <flowgraph/SinkFloat.h>
 #include <flowgraph/SinkI16.h>
 #include <flowgraph/SinkI24.h>
-#include <flowgraph/SinkI32.h>
 #include <flowgraph/SourceFloat.h>
 #include <flowgraph/SourceI16.h>
 #include <flowgraph/SourceI24.h>
-#include <flowgraph/SourceI32.h>
 
 using namespace flowgraph;
 
@@ -40,8 +38,7 @@ aaudio_result_t AAudioFlowGraph::configure(audio_format_t sourceFormat,
                           int32_t sinkChannelCount) {
     AudioFloatOutputPort *lastOutput = nullptr;
 
-    // TODO change back to ALOGD
-    ALOGI("%s() source format = 0x%08x, channels = %d, sink format = 0x%08x, channels = %d",
+    ALOGV("%s() source format = 0x%08x, channels = %d, sink format = 0x%08x, channels = %d",
           __func__, sourceFormat, sourceChannelCount, sinkFormat, sinkChannelCount);
 
     switch (sourceFormat) {
@@ -54,10 +51,7 @@ aaudio_result_t AAudioFlowGraph::configure(audio_format_t sourceFormat,
         case AUDIO_FORMAT_PCM_24_BIT_PACKED:
             mSource = std::make_unique<SourceI24>(sourceChannelCount);
             break;
-        case AUDIO_FORMAT_PCM_32_BIT:
-            mSource = std::make_unique<SourceI32>(sourceChannelCount);
-            break;
-        default:
+        default: // TODO add I32
             ALOGE("%s() Unsupported source format = %d", __func__, sourceFormat);
             return AAUDIO_ERROR_UNIMPLEMENTED;
     }
@@ -96,10 +90,7 @@ aaudio_result_t AAudioFlowGraph::configure(audio_format_t sourceFormat,
         case AUDIO_FORMAT_PCM_24_BIT_PACKED:
             mSink = std::make_unique<SinkI24>(sinkChannelCount);
             break;
-        case AUDIO_FORMAT_PCM_32_BIT:
-            mSink = std::make_unique<SinkI32>(sinkChannelCount);
-            break;
-        default:
+        default: // TODO add I32
             ALOGE("%s() Unsupported sink format = %d", __func__, sinkFormat);
             return AAUDIO_ERROR_UNIMPLEMENTED;
     }

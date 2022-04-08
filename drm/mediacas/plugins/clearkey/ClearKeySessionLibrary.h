@@ -22,6 +22,7 @@
 #include <openssl/aes.h>
 #include <utils/KeyedVector.h>
 #include <utils/Mutex.h>
+#include <utils/RefBase.h>
 
 namespace android {
 struct ABuffer;
@@ -29,7 +30,7 @@ struct ABuffer;
 namespace clearkeycas {
 class KeyFetcher;
 
-class ClearKeyCasSession {
+class ClearKeyCasSession : public RefBase {
 public:
     explicit ClearKeyCasSession(CasPlugin *plugin);
 

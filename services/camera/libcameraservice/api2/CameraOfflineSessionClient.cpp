@@ -72,16 +72,6 @@ status_t CameraOfflineSessionClient::setRotateAndCropOverride(uint8_t /*rotateAn
     return OK;
 }
 
-bool CameraOfflineSessionClient::supportsCameraMute() {
-    // Offline mode doesn't support muting
-    return false;
-}
-
-status_t CameraOfflineSessionClient::setCameraMute(bool) {
-    return INVALID_OPERATION;
-}
-
-
 status_t CameraOfflineSessionClient::dump(int fd, const Vector<String16>& args) {
     return BasicClient::dump(fd, args);
 }
@@ -275,17 +265,10 @@ void CameraOfflineSessionClient::notifyShutter(const CaptureResultExtras& result
     }
 }
 
-status_t CameraOfflineSessionClient::notifyActive() {
-    return startCameraStreamingOps();
-}
-
-void CameraOfflineSessionClient::notifyIdle(
-        int64_t /*requestCount*/, int64_t /*resultErrorCount*/, bool /*deviceError*/,
-        const std::vector<hardware::CameraStreamStats>& /*streamStats*/) {
+void CameraOfflineSessionClient::notifyIdle() {
     if (mRemoteCallback.get() != nullptr) {
         mRemoteCallback->onDeviceIdle();
     }
-    finishCameraStreamingOps();
 }
 
 void CameraOfflineSessionClient::notifyAutoFocus(uint8_t newState, int triggerId) {

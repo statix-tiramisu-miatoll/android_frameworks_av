@@ -161,18 +161,11 @@ class BufferpoolMultiTest : public ::testing::Test {
           message.data.bufferId, message.data.timestampUs, &rhandle, &rbuffer);
       mManager->close(message.data.connectionId);
       if (status != ResultStatus::OK) {
-        message.data.command = PipeCommand::RECEIVE_ERROR;
-        sendMessage(mResultPipeFds, message);
-        return;
-      }
-      if (!TestBufferPoolAllocator::Verify(rhandle, 0x77)) {
-        message.data.command = PipeCommand::RECEIVE_ERROR;
-        sendMessage(mResultPipeFds, message);
-        return;
-      }
-      if (rhandle) {
-        native_handle_close(rhandle);
-        native_handle_delete(rhandle);
+        if (!TestBufferPoolAllocator::Verify(rhandle, 0x77)) {
+          message.data.command = PipeCommand::RECEIVE_ERROR;
+          sendMessage(mResultPipeFds, message);
+          return;
+        }
       }
     }
     message.data.command = PipeCommand::RECEIVE_OK;
@@ -205,10 +198,6 @@ TEST_F(BufferpoolMultiTest, TransferBuffer) {
     ASSERT_TRUE(status == ResultStatus::OK);
 
     ASSERT_TRUE(TestBufferPoolAllocator::Fill(shandle, 0x77));
-    if (shandle) {
-        native_handle_close(shandle);
-        native_handle_delete(shandle);
-    }
 
     status = mManager->postSend(receiverId, sbuffer, &transactionId, &postUs);
     ASSERT_TRUE(status == ResultStatus::OK);
@@ -221,13 +210,12 @@ TEST_F(BufferpoolMultiTest, TransferBuffer) {
     sendMessage(mCommandPipeFds, message);
   }
   EXPECT_TRUE(receiveMessage(mResultPipeFds, &message));
-  EXPECT_TRUE(message.data.command == PipeCommand::RECEIVE_OK);
 }
 
 }  // anonymous namespace
 
 int main(int argc, char** argv) {
-  android::hardware::details::setTrebleTestingOverride(true);
+  setenv("TREBLE_TESTING_OVERRIDE", "true", true);
   ::testing::InitGoogleTest(&argc, argv);
   int status = RUN_ALL_TESTS();
   LOG(INFO) << "Test result = " << status;

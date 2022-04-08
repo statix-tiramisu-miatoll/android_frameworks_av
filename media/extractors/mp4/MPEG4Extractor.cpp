@@ -62,16 +62,6 @@
 
 #define ALAC_SPECIFIC_INFO_SIZE (36)
 
-// TODO : Remove the defines once mainline media is built against NDK >= 31.
-// The mp4 extractor is part of mainline and builds against NDK 29 as of
-// writing. These keys are available only from NDK 31:
-#define AMEDIAFORMAT_KEY_MPEGH_PROFILE_LEVEL_INDICATION \
-  "mpegh-profile-level-indication"
-#define AMEDIAFORMAT_KEY_MPEGH_REFERENCE_CHANNEL_LAYOUT \
-  "mpegh-reference-channel-layout"
-#define AMEDIAFORMAT_KEY_MPEGH_COMPATIBLE_SETS \
-  "mpegh-compatible-sets"
-
 namespace android {
 
 enum {
@@ -149,7 +139,6 @@ private:
     bool mIsHEVC;
     bool mIsDolbyVision;
     bool mIsAC4;
-    bool mIsMpegH = false;
     bool mIsPcm;
     size_t mNALLengthSize;
 
@@ -161,7 +150,6 @@ private:
     uint8_t *mSrcBuffer;
 
     bool mIsHeif;
-    bool mIsAvif;
     bool mIsAudio;
     bool mIsUsac = false;
     sp<ItemTable> mItemTable;
@@ -215,8 +203,8 @@ private:
         uint32_t duration;
         int32_t compositionOffset;
         uint8_t iv[16];
-        Vector<uint32_t> clearsizes;
-        Vector<uint32_t> encryptedsizes;
+        Vector<size_t> clearsizes;
+        Vector<size_t> encryptedsizes;
     };
     Vector<Sample> mCurrentSamples;
     std::map<off64_t, uint32_t> mDrmOffsets;
@@ -385,15 +373,9 @@ static const char *FourCC2MIME(uint32_t fourcc) {
             return MEDIA_MIMETYPE_AUDIO_FLAC;
         case FOURCC("av01"):
             return MEDIA_MIMETYPE_VIDEO_AV1;
-        case FOURCC("vp09"):
-            return MEDIA_MIMETYPE_VIDEO_VP9;
         case FOURCC(".mp3"):
         case 0x6D730055: // "ms U" mp3 audio
             return MEDIA_MIMETYPE_AUDIO_MPEG;
-        case FOURCC("mha1"):
-            return MEDIA_MIMETYPE_AUDIO_MPEGH_MHA1;
-        case FOURCC("mhm1"):
-            return MEDIA_MIMETYPE_AUDIO_MPEGH_MHM1;
         default:
             ALOGW("Unknown fourcc: %c%c%c%c",
                    (fourcc >> 24) & 0xff,
@@ -431,7 +413,6 @@ MPEG4Extractor::MPEG4Extractor(DataSourceHelper *source, const char *mime)
       mIsHeif(false),
       mHasMoovBox(false),
       mPreferHeif(mime != NULL && !strcasecmp(mime, MEDIA_MIMETYPE_CONTAINER_HEIF)),
-      mIsAvif(false),
       mFirstTrack(NULL),
       mLastTrack(NULL) {
     ALOGV("mime=%s, mPreferHeif=%d", mime, mPreferHeif);
@@ -656,7 +637,8 @@ media_status_t MPEG4Extractor::getTrackMetaData(
         }
     }
 
-    return AMediaFormat_copy(meta, track->meta);
+    AMediaFormat_copy(meta, track->meta);
+    return AMEDIA_OK;
 }
 
 status_t MPEG4Extractor::readMetaData() {
@@ -687,7 +669,7 @@ status_t MPEG4Extractor::readMetaData() {
         }
     }
 
-    if ((mIsAvif || mIsHeif) && (mItemTable != NULL) && (mItemTable->countImages() > 0)) {
+    if (mIsHeif && (mItemTable != NULL) && (mItemTable->countImages() > 0)) {
         off64_t exifOffset;
         size_t exifSize;
         if (mItemTable->getExifOffsetAndSize(&exifOffset, &exifSize) == OK) {
@@ -695,19 +677,6 @@ status_t MPEG4Extractor::readMetaData() {
                     AMEDIAFORMAT_KEY_EXIF_OFFSET, (int64_t)exifOffset);
             AMediaFormat_setInt64(mFileMetaData,
                     AMEDIAFORMAT_KEY_EXIF_SIZE, (int64_t)exifSize);
-        }
-        off64_t xmpOffset;
-        size_t xmpSize;
-        if (mItemTable->getXmpOffsetAndSize(&xmpOffset, &xmpSize) == OK) {
-            // TODO(chz): b/175717339
-            // Use a hard-coded string here instead of named keys. The keys are available
-            // only on API 31+. The mp4 extractor is part of mainline and has min_sdk_version
-            // of 29. This hard-coded string can be replaced with the named constant once
-            // the mp4 extractor is built against API 31+.
-            AMediaFormat_setInt64(mFileMetaData,
-                    "xmp-offset" /*AMEDIAFORMAT_KEY_XMP_OFFSET*/, (int64_t)xmpOffset);
-            AMediaFormat_setInt64(mFileMetaData,
-                    "xmp-size" /*AMEDIAFORMAT_KEY_XMP_SIZE*/, (int64_t)xmpSize);
         }
         for (uint32_t imageIndex = 0;
                 imageIndex < mItemTable->countImages(); imageIndex++) {
@@ -726,7 +695,7 @@ status_t MPEG4Extractor::readMetaData() {
             }
             mInitCheck = OK;
 
-            ALOGV("adding %s image track %u", mIsHeif ? "HEIF" : "AVIF", imageIndex);
+            ALOGV("adding HEIF image track %u", imageIndex);
             Track *track = new Track;
             if (mLastTrack != NULL) {
                 mLastTrack->next = track;
@@ -752,10 +721,6 @@ status_t MPEG4Extractor::readMetaData() {
                 MEDIA_MIMETYPE_IMAGE_ANDROID_HEIC) != NULL) {
             AMediaFormat_setString(mFileMetaData,
                     AMEDIAFORMAT_KEY_MIME, MEDIA_MIMETYPE_CONTAINER_HEIF);
-        } else if (findTrackByMimePrefix(
-                MEDIA_MIMETYPE_IMAGE_AVIF) != NULL) {
-            AMediaFormat_setString(mFileMetaData,
-                    AMEDIAFORMAT_KEY_MIME, MEDIA_MIMETYPE_IMAGE_AVIF);
         } else {
             AMediaFormat_setString(mFileMetaData,
                     AMEDIAFORMAT_KEY_MIME, "application/octet-stream");
@@ -1127,9 +1092,7 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
                     void *data;
                     size_t size;
 
-                    if (AMediaFormat_getBuffer(mLastTrack->meta, AMEDIAFORMAT_KEY_CSD_2,
-                                               &data, &size)
-                        && size >= 5) {
+                    if (AMediaFormat_getBuffer(mLastTrack->meta, AMEDIAFORMAT_KEY_CSD_2, &data, &size)) {
                         const uint8_t *ptr = (const uint8_t *)data;
                         const uint8_t profile = ptr[2] >> 1;
                         const uint8_t bl_compatibility_id = (ptr[4]) >> 4;
@@ -1166,12 +1129,8 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
                             mLastTrack->next = track_b;
                             track_b->next = NULL;
 
-                            // we want to remove the csd-2 key from the metadata, but
-                            // don't have an AMediaFormat_* function to do so. Settle
-                            // for replacing this csd-2 with an empty csd-2.
-                            uint8_t emptybuffer[8] = {};
-                            AMediaFormat_setBuffer(track_b->meta, AMEDIAFORMAT_KEY_CSD_2,
-                                                   emptybuffer, 0);
+                            auto id = track_b->meta->mFormat->findEntryByName(AMEDIAFORMAT_KEY_CSD_2);
+                            track_b->meta->mFormat->removeEntryAt(id);
 
                             if (4 == profile || 7 == profile || 8 == profile ) {
                                 AMediaFormat_setString(track_b->meta,
@@ -1191,7 +1150,7 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
             } else if (chunk_type == FOURCC("moov")) {
                 mInitCheck = OK;
 
-                return UNKNOWN_ERROR;  // Return a generic error.
+                return UNKNOWN_ERROR;  // Return a dummy error.
             }
             break;
         }
@@ -1800,8 +1759,6 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
         case FOURCC("fLaC"):
         case FOURCC(".mp3"):
         case 0x6D730055: // "ms U" mp3 audio
-        case FOURCC("mha1"):
-        case FOURCC("mhm1"):
         {
             if (mIsQT && depth >= 1 && mPath[depth - 1] == FOURCC("wave")) {
 
@@ -1831,7 +1788,7 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
                 return ERROR_IO;
             }
 
-            // we can get data_ref_index value from U16_AT(&buffer[6])
+            uint16_t data_ref_index __unused = U16_AT(&buffer[6]);
             uint16_t version = U16_AT(&buffer[8]);
             uint32_t num_channels = U16_AT(&buffer[16]);
 
@@ -2001,94 +1958,7 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
             }
             break;
         }
-        case FOURCC("mhaC"):
-        {
-            // See ISO_IEC_23008-3;2019 MHADecoderConfigurationRecord
-            constexpr uint32_t mhac_header_size = 4 /* size */ + 4 /* boxtype 'mhaC' */
-                    + 1 /* configurationVersion */ + 1 /* mpegh3daProfileLevelIndication */
-                    + 1 /* referenceChannelLayout */ + 2 /* mpegh3daConfigLength */;
-            uint8_t mhac_header[mhac_header_size];
-            off64_t data_offset = *offset;
 
-            if (chunk_size < sizeof(mhac_header)) {
-                return ERROR_MALFORMED;
-            }
-
-            if (mDataSource->readAt(data_offset, mhac_header, sizeof(mhac_header))
-                    < (ssize_t)sizeof(mhac_header)) {
-                return ERROR_IO;
-            }
-
-            //get mpegh3daProfileLevelIndication
-            const uint32_t mpegh3daProfileLevelIndication = mhac_header[9];
-            AMediaFormat_setInt32(mLastTrack->meta,
-                    AMEDIAFORMAT_KEY_MPEGH_PROFILE_LEVEL_INDICATION,
-                    mpegh3daProfileLevelIndication);
-
-             //get referenceChannelLayout
-            const uint32_t referenceChannelLayout = mhac_header[10];
-            AMediaFormat_setInt32(mLastTrack->meta,
-                    AMEDIAFORMAT_KEY_MPEGH_REFERENCE_CHANNEL_LAYOUT,
-                    referenceChannelLayout);
-
-            // get mpegh3daConfigLength
-            const uint32_t mhac_config_size = U16_AT(&mhac_header[11]);
-            if (chunk_size != sizeof(mhac_header) + mhac_config_size) {
-                return ERROR_MALFORMED;
-            }
-
-            data_offset += sizeof(mhac_header);
-            uint8_t mhac_config[mhac_config_size];
-            if (mDataSource->readAt(data_offset, mhac_config, sizeof(mhac_config))
-                    < (ssize_t)sizeof(mhac_config)) {
-                return ERROR_IO;
-            }
-
-            AMediaFormat_setBuffer(mLastTrack->meta,
-                    AMEDIAFORMAT_KEY_CSD_0, mhac_config, sizeof(mhac_config));
-            data_offset += sizeof(mhac_config);
-            *offset = data_offset;
-            break;
-        }
-        case FOURCC("mhaP"):
-        {
-            // FDAmd_2 of ISO_IEC_23008-3;2019 MHAProfileAndLevelCompatibilitySetBox
-            constexpr uint32_t mhap_header_size = 4 /* size */ + 4 /* boxtype 'mhaP' */
-                    + 1 /* numCompatibleSets */;
-
-            uint8_t mhap_header[mhap_header_size];
-            off64_t data_offset = *offset;
-
-            if (chunk_size < (ssize_t)mhap_header_size) {
-                return ERROR_MALFORMED;
-            }
-
-            if (mDataSource->readAt(data_offset, mhap_header, sizeof(mhap_header))
-                    < (ssize_t)sizeof(mhap_header)) {
-                return ERROR_IO;
-            }
-
-            // mhap_compatible_sets_size = numCompatibleSets * sizeof(uint8_t)
-            const uint32_t mhap_compatible_sets_size = mhap_header[8];
-            if (chunk_size != sizeof(mhap_header) + mhap_compatible_sets_size) {
-                return ERROR_MALFORMED;
-            }
-
-            data_offset += sizeof(mhap_header);
-            uint8_t mhap_compatible_sets[mhap_compatible_sets_size];
-            if (mDataSource->readAt(
-                    data_offset, mhap_compatible_sets, sizeof(mhap_compatible_sets))
-                            < (ssize_t)sizeof(mhap_compatible_sets)) {
-                return ERROR_IO;
-            }
-
-            AMediaFormat_setBuffer(mLastTrack->meta,
-                    AMEDIAFORMAT_KEY_MPEGH_COMPATIBLE_SETS,
-                    mhap_compatible_sets, sizeof(mhap_compatible_sets));
-            data_offset += sizeof(mhap_compatible_sets);
-            *offset = data_offset;
-            break;
-        }
         case FOURCC("mp4v"):
         case FOURCC("encv"):
         case FOURCC("s263"):
@@ -2103,7 +1973,6 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
         case FOURCC("dvh1"):
         case FOURCC("dav1"):
         case FOURCC("av01"):
-        case FOURCC("vp09"):
         {
             uint8_t buffer[78];
             if (chunk_data_size < (ssize_t)sizeof(buffer)) {
@@ -2116,7 +1985,7 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
                 return ERROR_IO;
             }
 
-            // we can get data_ref_index value from U16_AT(&buffer[6])
+            uint16_t data_ref_index __unused = U16_AT(&buffer[6]);
             uint16_t width = U16_AT(&buffer[6 + 18]);
             uint16_t height = U16_AT(&buffer[6 + 20]);
 
@@ -2566,8 +2435,6 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
             *offset += chunk_size;
             break;
         }
-
-        case FOURCC("vpcC"):
         case FOURCC("av1C"):
         {
             auto buffer = heapbuffer<uint8_t>(chunk_data_size);
@@ -2707,9 +2574,9 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
         case FOURCC("iref"):
         case FOURCC("ipro"):
         {
-            if (mIsHeif || mIsAvif) {
+            if (mIsHeif) {
                 if (mItemTable == NULL) {
-                    mItemTable = new ItemTable(mDataSource, mIsHeif);
+                    mItemTable = new ItemTable(mDataSource);
                 }
                 status_t err = mItemTable->parse(
                         chunk_type, data_offset, chunk_data_size);
@@ -3011,21 +2878,6 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
             break;
         }
 
-        case FOURCC("pasp"):
-        {
-            *offset += chunk_size;
-            // this must be in a VisualSampleEntry box under the Sample Description Box ('stsd')
-            // ignore otherwise
-            if (depth >= 2 && mPath[depth - 2] == FOURCC("stsd")) {
-                status_t err = parsePaspBox(data_offset, chunk_data_size);
-                if (err != OK) {
-                    return err;
-                }
-            }
-
-            break;
-        }
-
         case FOURCC("titl"):
         case FOURCC("perf"):
         case FOURCC("auth"):
@@ -3150,20 +3002,14 @@ status_t MPEG4Extractor::parseChunk(off64_t *offset, int depth) {
                     mIsHeif = true;
                     brandSet.erase(FOURCC("mif1"));
                     brandSet.erase(FOURCC("heic"));
-                } else if (brandSet.count(FOURCC("avif")) > 0 ||
-                       brandSet.count(FOURCC("avis")) > 0) {
-                    ALOGV("identified AVIF image");
-                    mIsAvif = true;
-                    brandSet.erase(FOURCC("avif"));
-                    brandSet.erase(FOURCC("avis"));
                 }
 
                 if (!brandSet.empty()) {
                     // This means that the file should have moov box.
                     // It could be any iso files (mp4, heifs, etc.)
                     mHasMoovBox = true;
-                    if (mIsHeif || mIsAvif) {
-                        ALOGV("identified %s image with other tracks", mIsHeif ? "HEIF" : "AVIF");
+                    if (mIsHeif) {
+                        ALOGV("identified HEIF image with other tracks");
                     }
                 }
             }
@@ -3564,7 +3410,7 @@ status_t MPEG4Extractor::parseAC3SpecificBox(off64_t offset) {
     }
 
     // skip
-    br.skipBits(3); // bsmod
+    unsigned bsmod __unused = br.getBits(3);
 
     unsigned acmod = br.getBits(3);
     unsigned lfeon = br.getBits(1);
@@ -3875,18 +3721,19 @@ status_t MPEG4Extractor::parseTrackHeader(
         return ERROR_IO;
     }
 
+    uint64_t ctime __unused, mtime __unused, duration __unused;
     int32_t id;
 
     if (version == 1) {
-        // we can get ctime value from U64_AT(&buffer[4])
-        // we can get mtime value from U64_AT(&buffer[12])
+        ctime = U64_AT(&buffer[4]);
+        mtime = U64_AT(&buffer[12]);
         id = U32_AT(&buffer[20]);
-        // we can get duration value from U64_AT(&buffer[28])
+        duration = U64_AT(&buffer[28]);
     } else if (version == 0) {
-        // we can get ctime value from U32_AT(&buffer[4])
-        // we can get mtime value from U32_AT(&buffer[8])
+        ctime = U32_AT(&buffer[4]);
+        mtime = U32_AT(&buffer[8]);
         id = U32_AT(&buffer[12]);
-        // we can get duration value from U32_AT(&buffer[20])
+        duration = U32_AT(&buffer[20]);
     } else {
         return ERROR_UNSUPPORTED;
     }
@@ -4204,26 +4051,6 @@ status_t MPEG4Extractor::parseColorInfo(off64_t offset, size_t size) {
     return OK;
 }
 
-status_t MPEG4Extractor::parsePaspBox(off64_t offset, size_t size) {
-    if (size < 8 || size == SIZE_MAX || mLastTrack == NULL) {
-        return ERROR_MALFORMED;
-    }
-
-    uint32_t data[2]; // hSpacing, vSpacing
-    if (mDataSource->readAt(offset, data, 8) < 8) {
-        return ERROR_IO;
-    }
-    uint32_t hSpacing = ntohl(data[0]);
-    uint32_t vSpacing = ntohl(data[1]);
-
-    if (hSpacing != 0 && vSpacing != 0) {
-        AMediaFormat_setInt32(mLastTrack->meta, AMEDIAFORMAT_KEY_SAR_WIDTH, hSpacing);
-        AMediaFormat_setInt32(mLastTrack->meta, AMEDIAFORMAT_KEY_SAR_HEIGHT, vSpacing);
-    }
-
-    return OK;
-}
-
 status_t MPEG4Extractor::parse3GPPMetaData(off64_t offset, size_t size, int depth) {
     if (size < 4 || size == SIZE_MAX) {
         return ERROR_MALFORMED;
@@ -4501,8 +4328,7 @@ MediaTrackHelper *MPEG4Extractor::getTrack(size_t index) {
         if (size != 24 || ((ptr[0] != 1 || ptr[1] != 0) && (ptr[0] != 2 || ptr[1] != 1))) {
             return NULL;
         }
-   } else if (!strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_AV1)
-           || !strcasecmp(mime, MEDIA_MIMETYPE_IMAGE_AVIF)) {
+   } else if (!strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_AV1)) {
         void *data;
         size_t size;
         if (!AMediaFormat_getBuffer(track->meta, AMEDIAFORMAT_KEY_CSD_0, &data, &size)) {
@@ -4511,22 +4337,7 @@ MediaTrackHelper *MPEG4Extractor::getTrack(size_t index) {
 
         const uint8_t *ptr = (const uint8_t *)data;
 
-        if (size < 4 || ptr[0] != 0x81) {  // configurationVersion == 1
-            return NULL;
-        }
-        if (!strcasecmp(mime, MEDIA_MIMETYPE_IMAGE_AVIF)) {
-            itemTable = mItemTable;
-        }
-    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_VP9)) {
-        void *data;
-        size_t size;
-        if (!AMediaFormat_getBuffer(track->meta, AMEDIAFORMAT_KEY_CSD_0, &data, &size)) {
-            return NULL;
-        }
-
-        const uint8_t *ptr = (const uint8_t *)data;
-
-        if (size < 5 || ptr[0] != 0x01) {  // configurationVersion == 1
+        if (size < 5 || ptr[0] != 0x81) {  // configurationVersion == 1
             return NULL;
         }
     }
@@ -4580,10 +4391,6 @@ status_t MPEG4Extractor::verifyTrack(Track *track) {
             return ERROR_MALFORMED;
         }
     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_AV1)) {
-        if (!AMediaFormat_getBuffer(track->meta, AMEDIAFORMAT_KEY_CSD_0, &data, &size)) {
-            return ERROR_MALFORMED;
-        }
-    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_VP9)) {
         if (!AMediaFormat_getBuffer(track->meta, AMEDIAFORMAT_KEY_CSD_0, &data, &size)) {
             return ERROR_MALFORMED;
         }
@@ -4681,9 +4488,6 @@ status_t MPEG4Extractor::updateAudioTrackInfoFromESDS_MPEG4Audio(
 
     if (objectTypeIndication == 0x6B || objectTypeIndication == 0x69) {
         // mp3 audio
-        if (mLastTrack == NULL)
-            return ERROR_MALFORMED;
-
         AMediaFormat_setString(mLastTrack->meta,AMEDIAFORMAT_KEY_MIME, MEDIA_MIMETYPE_AUDIO_MPEG);
         return OK;
     }
@@ -4774,10 +4578,6 @@ status_t MPEG4Extractor::updateAudioTrackInfoFromESDS_MPEG4Audio(
         if (offset >= csd_size || csd[offset] != 0x01) {
             return ERROR_MALFORMED;
         }
-
-        if (mLastTrack == NULL) {
-            return ERROR_MALFORMED;
-        }
         // formerly kKeyVorbisInfo
         AMediaFormat_setBuffer(mLastTrack->meta,
                 AMEDIAFORMAT_KEY_CSD_0, &csd[offset], len1);
@@ -4841,17 +4641,18 @@ status_t MPEG4Extractor::updateAudioTrackInfoFromESDS_MPEG4Audio(
     if (objectType == AOT_SBR || objectType == AOT_PS) {//SBR specific config per 14496-3 tbl 1.13
         if (br.numBitsLeft() < 4) return ERROR_MALFORMED;
         uint32_t extFreqIndex = br.getBits(4);
+        int32_t extSampleRate __unused;
         if (extFreqIndex == 15) {
             if (csd_size < 8) {
                 return ERROR_MALFORMED;
             }
             if (br.numBitsLeft() < 24) return ERROR_MALFORMED;
-            br.skipBits(24); // extSampleRate
+            extSampleRate = br.getBits(24);
         } else {
             if (extFreqIndex == 13 || extFreqIndex == 14) {
                 return ERROR_MALFORMED;
             }
-            //extSampleRate = kSamplingRate[extFreqIndex];
+            extSampleRate = kSamplingRate[extFreqIndex];
         }
         //TODO: save the extension sampling rate value in meta data =>
         //      AMediaFormat_setInt32(mLastTrack->meta, kKeyExtSampleRate, extSampleRate);
@@ -4894,13 +4695,13 @@ status_t MPEG4Extractor::updateAudioTrackInfoFromESDS_MPEG4Audio(
                 objectType == AOT_ER_AAC_LD || objectType == AOT_ER_AAC_SCAL ||
                 objectType == AOT_ER_BSAC) {
             if (br.numBitsLeft() < 2) return ERROR_MALFORMED;
-            br.skipBits(1); // frameLengthFlag
+            const int32_t frameLengthFlag __unused = br.getBits(1);
 
             const int32_t dependsOnCoreCoder = br.getBits(1);
 
             if (dependsOnCoreCoder ) {
                 if (br.numBitsLeft() < 14) return ERROR_MALFORMED;
-                br.skipBits(14); // coreCoderDelay
+                const int32_t coreCoderDelay __unused = br.getBits(14);
             }
 
             int32_t extensionFlag = -1;
@@ -4932,64 +4733,64 @@ status_t MPEG4Extractor::updateAudioTrackInfoFromESDS_MPEG4Audio(
                 if (br.numBitsLeft() < 32) {
                     return ERROR_MALFORMED;
                 }
-                br.skipBits(4); // ElementInstanceTag
-                br.skipBits(2); // Profile
-                br.skipBits(4); // SamplingFrequencyIndex
+                const int32_t ElementInstanceTag __unused = br.getBits(4);
+                const int32_t Profile __unused = br.getBits(2);
+                const int32_t SamplingFrequencyIndex __unused = br.getBits(4);
                 const int32_t NumFrontChannelElements = br.getBits(4);
                 const int32_t NumSideChannelElements = br.getBits(4);
                 const int32_t NumBackChannelElements = br.getBits(4);
                 const int32_t NumLfeChannelElements = br.getBits(2);
-                br.skipBits(3); // NumAssocDataElements
-                br.skipBits(4); // NumValidCcElements
+                const int32_t NumAssocDataElements __unused = br.getBits(3);
+                const int32_t NumValidCcElements __unused = br.getBits(4);
 
                 const int32_t MonoMixdownPresent = br.getBits(1);
 
                 if (MonoMixdownPresent != 0) {
                     if (br.numBitsLeft() < 4) return ERROR_MALFORMED;
-                    br.skipBits(4); // MonoMixdownElementNumber
+                    const int32_t MonoMixdownElementNumber __unused = br.getBits(4);
                 }
 
                 if (br.numBitsLeft() < 1) return ERROR_MALFORMED;
                 const int32_t StereoMixdownPresent = br.getBits(1);
                 if (StereoMixdownPresent != 0) {
                     if (br.numBitsLeft() < 4) return ERROR_MALFORMED;
-                    br.skipBits(4); // StereoMixdownElementNumber
+                    const int32_t StereoMixdownElementNumber __unused = br.getBits(4);
                 }
 
                 if (br.numBitsLeft() < 1) return ERROR_MALFORMED;
                 const int32_t MatrixMixdownIndexPresent = br.getBits(1);
                 if (MatrixMixdownIndexPresent != 0) {
                     if (br.numBitsLeft() < 3) return ERROR_MALFORMED;
-                    br.skipBits(2); // MatrixMixdownIndex
-                    br.skipBits(1); // PseudoSurroundEnable
+                    const int32_t MatrixMixdownIndex __unused = br.getBits(2);
+                    const int32_t PseudoSurroundEnable __unused = br.getBits(1);
                 }
 
                 int i;
                 for (i=0; i < NumFrontChannelElements; i++) {
                     if (br.numBitsLeft() < 5) return ERROR_MALFORMED;
                     const int32_t FrontElementIsCpe = br.getBits(1);
-                    br.skipBits(4); // FrontElementTagSelect
+                    const int32_t FrontElementTagSelect __unused = br.getBits(4);
                     channelsNum += FrontElementIsCpe ? 2 : 1;
                 }
 
                 for (i=0; i < NumSideChannelElements; i++) {
                     if (br.numBitsLeft() < 5) return ERROR_MALFORMED;
                     const int32_t SideElementIsCpe = br.getBits(1);
-                    br.skipBits(4); // SideElementTagSelect
+                    const int32_t SideElementTagSelect __unused = br.getBits(4);
                     channelsNum += SideElementIsCpe ? 2 : 1;
                 }
 
                 for (i=0; i < NumBackChannelElements; i++) {
                     if (br.numBitsLeft() < 5) return ERROR_MALFORMED;
                     const int32_t BackElementIsCpe = br.getBits(1);
-                    br.skipBits(4); // BackElementTagSelect
+                    const int32_t BackElementTagSelect __unused = br.getBits(4);
                     channelsNum += BackElementIsCpe ? 2 : 1;
                 }
                 channelsEffectiveNum = channelsNum;
 
                 for (i=0; i < NumLfeChannelElements; i++) {
                     if (br.numBitsLeft() < 4) return ERROR_MALFORMED;
-                    br.skipBits(4); // LfeElementTagSelect
+                    const int32_t LfeElementTagSelect __unused = br.getBits(4);
                     channelsNum += 1;
                 }
                 ALOGV("mpeg4 audio channelsNum = %d", channelsNum);
@@ -5086,6 +4887,7 @@ MPEG4Source::MPEG4Source(
       mBuffer(NULL),
       mSrcBufferSize(0),
       mSrcBuffer(NULL),
+      mIsHeif(itemTable != NULL),
       mItemTable(itemTable),
       mElstShiftStartTicks(elstShiftStartTicks),
       mElstInitialEmptyEditTicks(elstInitialEmptyEditTicks) {
@@ -5115,15 +4917,11 @@ MPEG4Source::MPEG4Source(
     bool success = AMediaFormat_getString(mFormat, AMEDIAFORMAT_KEY_MIME, &mime);
     CHECK(success);
 
-    mIsMpegH = !strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MPEGH_MHA1) ||
-               !strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MPEGH_MHM1);
     mIsAVC = !strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_AVC);
     mIsHEVC = !strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_HEVC) ||
               !strcasecmp(mime, MEDIA_MIMETYPE_IMAGE_ANDROID_HEIC);
     mIsAC4 = !strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AC4);
     mIsDolbyVision = !strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_DOLBY_VISION);
-    mIsHeif = !strcasecmp(mime, MEDIA_MIMETYPE_IMAGE_ANDROID_HEIC) && mItemTable != NULL;
-    mIsAvif = !strcasecmp(mime, MEDIA_MIMETYPE_IMAGE_AVIF) && mItemTable != NULL;
 
     if (mIsAVC) {
         void *data;
@@ -5974,7 +5772,7 @@ status_t MPEG4Source::parseTrackFragmentRun(off64_t offset, off64_t size) {
             return -EINVAL;
         }
 
-        // apply some quick (vs strict legality) checks
+        // apply some sanity (vs strict legality) checks
         //
         static constexpr uint32_t kMaxTrunSampleCount = 10000;
         if (sampleCount > kMaxTrunSampleCount) {
@@ -6120,7 +5918,7 @@ media_status_t MPEG4Source::read(
 
     if (options && options->getSeekTo(&seekTimeUs, &mode)) {
         ALOGV("seekTimeUs:%" PRId64, seekTimeUs);
-        if (mIsHeif || mIsAvif) {
+        if (mIsHeif) {
             CHECK(mSampleTable == NULL);
             CHECK(mItemTable != NULL);
             int32_t imageIndex;
@@ -6190,11 +5988,10 @@ media_status_t MPEG4Source::read(
             }
 
             uint32_t syncSampleIndex = sampleIndex;
-            // assume every non-USAC/non-MPEGH audio sample is a sync sample.
-            // This works around
+            // assume every non-USAC audio sample is a sync sample. This works around
             // seek issues with files that were incorrectly written with an
             // empty or single-sample stss block for the audio track
-            if (err == OK && (!mIsAudio || mIsUsac || mIsMpegH)) {
+            if (err == OK && (!mIsAudio || mIsUsac)) {
                 err = mSampleTable->findSyncSampleNear(
                         sampleIndex, &syncSampleIndex, findFlags);
             }
@@ -6266,7 +6063,7 @@ media_status_t MPEG4Source::read(
         newBuffer = true;
 
         status_t err;
-        if (!mIsHeif && !mIsAvif) {
+        if (!mIsHeif) {
             err = mSampleTable->getMetaDataForSample(mCurrentSampleIndex, &offset, &size,
                                                     (uint64_t*)&cts, &isSyncSample, &stts);
             if(err == OK) {
@@ -6392,19 +6189,7 @@ media_status_t MPEG4Source::read(
                 if (isSyncSample) {
                     AMediaFormat_setInt32(meta, AMEDIAFORMAT_KEY_IS_SYNC_FRAME, 1);
                 }
-
-                AMediaFormat_setInt64(
-                        meta, "sample-file-offset" /*AMEDIAFORMAT_KEY_SAMPLE_FILE_OFFSET*/,
-                        offset);
-
-                if (mSampleTable != nullptr &&
-                        mCurrentSampleIndex == mSampleTable->getLastSampleIndexInChunk()) {
-                    AMediaFormat_setInt64(
-                    meta,
-                    "last-sample-index-in-chunk" /*AMEDIAFORMAT_KEY_LAST_SAMPLE_INDEX_IN_CHUNK*/,
-                    mSampleTable->getLastSampleIndexInChunk());
-                }
-
+ 
                 ++mCurrentSampleIndex;
             }
         }
@@ -6483,6 +6268,7 @@ media_status_t MPEG4Source::read(
         if (num_bytes_read < (ssize_t)size) {
             mBuffer->release();
             mBuffer = NULL;
+
             return mSrcBufferFitsDataToRead ? AMEDIA_ERROR_IO : AMEDIA_ERROR_MALFORMED;
         }
 
@@ -6558,17 +6344,6 @@ media_status_t MPEG4Source::read(
 
         if (isSyncSample) {
             AMediaFormat_setInt32(meta, AMEDIAFORMAT_KEY_IS_SYNC_FRAME, 1);
-        }
-
-        AMediaFormat_setInt64(
-                meta, "sample-file-offset" /*AMEDIAFORMAT_KEY_SAMPLE_FILE_OFFSET*/, offset);
-
-        if (mSampleTable != nullptr &&
-                mCurrentSampleIndex == mSampleTable->getLastSampleIndexInChunk()) {
-            AMediaFormat_setInt64(
-                    meta,
-                    "last-sample-index-in-chunk" /*AMEDIAFORMAT_KEY_LAST_SAMPLE_INDEX_IN_CHUNK*/,
-                    mSampleTable->getLastSampleIndexInChunk());
         }
 
         ++mCurrentSampleIndex;
@@ -6731,9 +6506,9 @@ media_status_t MPEG4Source::fragmentedRead(
     if (smpl->encryptedsizes.size()) {
         // store clear/encrypted lengths in metadata
         AMediaFormat_setBuffer(bufmeta, AMEDIAFORMAT_KEY_CRYPTO_PLAIN_SIZES,
-                smpl->clearsizes.array(), smpl->clearsizes.size() * sizeof(uint32_t));
+                smpl->clearsizes.array(), smpl->clearsizes.size() * 4);
         AMediaFormat_setBuffer(bufmeta, AMEDIAFORMAT_KEY_CRYPTO_ENCRYPTED_SIZES,
-                smpl->encryptedsizes.array(), smpl->encryptedsizes.size() * sizeof(uint32_t));
+                smpl->encryptedsizes.array(), smpl->encryptedsizes.size() * 4);
         AMediaFormat_setInt32(bufmeta, AMEDIAFORMAT_KEY_CRYPTO_DEFAULT_IV_SIZE, mDefaultIVSize);
         AMediaFormat_setInt32(bufmeta, AMEDIAFORMAT_KEY_CRYPTO_MODE, mCryptoMode);
         AMediaFormat_setBuffer(bufmeta, AMEDIAFORMAT_KEY_CRYPTO_KEY, mCryptoKey, 16);
@@ -6942,8 +6717,7 @@ static bool LegacySniffMPEG4(DataSourceHelper *source, float *confidence) {
         || !memcmp(header, "ftypM4A ", 8) || !memcmp(header, "ftypf4v ", 8)
         || !memcmp(header, "ftypkddi", 8) || !memcmp(header, "ftypM4VP", 8)
         || !memcmp(header, "ftypmif1", 8) || !memcmp(header, "ftypheic", 8)
-        || !memcmp(header, "ftypmsf1", 8) || !memcmp(header, "ftyphevc", 8)
-        || !memcmp(header, "ftypavif", 8) || !memcmp(header, "ftypavis", 8)) {
+        || !memcmp(header, "ftypmsf1", 8) || !memcmp(header, "ftyphevc", 8)) {
         *confidence = 0.4;
 
         return true;
@@ -6960,7 +6734,6 @@ static bool isCompatibleBrand(uint32_t fourcc) {
         FOURCC("hvc1"),
         FOURCC("hev1"),
         FOURCC("av01"),
-        FOURCC("vp09"),
         FOURCC("3gp4"),
         FOURCC("mp41"),
         FOURCC("mp42"),
@@ -6979,8 +6752,6 @@ static bool isCompatibleBrand(uint32_t fourcc) {
         FOURCC("heic"),  // HEIF image
         FOURCC("msf1"),  // HEIF image sequence
         FOURCC("hevc"),  // HEIF image sequence
-        FOURCC("avif"),  // AVIF image
-        FOURCC("avis"),  // AVIF image sequence
     };
 
     for (size_t i = 0;

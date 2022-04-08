@@ -78,11 +78,6 @@ struct IComponent;
 struct IComponentStore;
 }  // namespace android::hardware::media::c2::V1_1
 
-namespace android::hardware::media::c2::V1_2 {
-struct IComponent;
-struct IComponentStore;
-}  // namespace android::hardware::media::c2::V1_2
-
 namespace android::hardware::media::bufferpool::V2_0 {
 struct IClientManager;
 }  // namespace android::hardware::media::bufferpool::V2_0
@@ -142,7 +137,6 @@ struct Codec2Client : public Codec2ConfigurableClient {
 
     typedef ::android::hardware::media::c2::V1_0::IComponentStore Base1_0;
     typedef ::android::hardware::media::c2::V1_1::IComponentStore Base1_1;
-    typedef ::android::hardware::media::c2::V1_2::IComponentStore Base1_2;
     typedef Base1_0 Base;
 
     struct Listener;
@@ -162,7 +156,6 @@ struct Codec2Client : public Codec2ConfigurableClient {
     sp<Base> const& getBase() const;
     sp<Base1_0> const& getBase1_0() const;
     sp<Base1_1> const& getBase1_1() const;
-    sp<Base1_2> const& getBase1_2() const;
 
     std::string const& getServiceName() const;
 
@@ -207,10 +200,9 @@ struct Codec2Client : public Codec2ConfigurableClient {
     // Try to create a component with a given name from all known
     // IComponentStore services. numberOfAttempts determines the number of times
     // to retry the HIDL call if the transaction fails.
-    static c2_status_t CreateComponentByName(
+    static std::shared_ptr<Component> CreateComponentByName(
             char const* componentName,
             std::shared_ptr<Listener> const& listener,
-            std::shared_ptr<Component>* component,
             std::shared_ptr<Codec2Client>* owner = nullptr,
             size_t numberOfAttempts = 10);
 
@@ -235,7 +227,6 @@ struct Codec2Client : public Codec2ConfigurableClient {
 protected:
     sp<Base1_0> mBase1_0;
     sp<Base1_1> mBase1_1;
-    sp<Base1_2> mBase1_2;
 
     // Finds the first store where the predicate returns C2_OK and returns the
     // last predicate result. The predicate will be tried on all stores. The
@@ -326,7 +317,6 @@ struct Codec2Client::Component : public Codec2Client::Configurable {
 
     typedef ::android::hardware::media::c2::V1_0::IComponent Base1_0;
     typedef ::android::hardware::media::c2::V1_1::IComponent Base1_1;
-    typedef ::android::hardware::media::c2::V1_2::IComponent Base1_2;
     typedef Base1_0 Base;
 
     c2_status_t createBlockPool(
@@ -384,8 +374,7 @@ struct Codec2Client::Component : public Codec2Client::Configurable {
     c2_status_t setOutputSurface(
             C2BlockPool::local_id_t blockPoolId,
             const sp<IGraphicBufferProducer>& surface,
-            uint32_t generation,
-            int maxDequeueBufferCount);
+            uint32_t generation);
 
     // Extract a slot number from of the block, then call
     // IGraphicBufferProducer::queueBuffer().
@@ -408,9 +397,6 @@ struct Codec2Client::Component : public Codec2Client::Configurable {
             const QueueBufferInput& input,
             QueueBufferOutput* output);
 
-    // Set max dequeue count for output surface.
-    void setOutputSurfaceMaxDequeueCount(int maxDequeueCount);
-
     // Connect to a given InputSurface.
     c2_status_t connectToInputSurface(
             const std::shared_ptr<InputSurface>& inputSurface,
@@ -426,14 +412,12 @@ struct Codec2Client::Component : public Codec2Client::Configurable {
     // base cannot be null.
     Component(const sp<Base>& base);
     Component(const sp<Base1_1>& base);
-    Component(const sp<Base1_2>& base);
 
     ~Component();
 
 protected:
     sp<Base1_0> mBase1_0;
     sp<Base1_1> mBase1_1;
-    sp<Base1_2> mBase1_2;
 
     struct BufferPoolSender;
     std::unique_ptr<BufferPoolSender> mBufferPoolSender;

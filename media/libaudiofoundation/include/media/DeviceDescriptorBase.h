@@ -18,7 +18,6 @@
 
 #include <vector>
 
-#include <android/media/AudioPort.h>
 #include <binder/Parcel.h>
 #include <binder/Parcelable.h>
 #include <media/AudioContainers.h>
@@ -42,8 +41,8 @@ public:
     virtual ~DeviceDescriptorBase() {}
 
     audio_devices_t type() const { return mDeviceTypeAddr.mType; }
-    const std::string& address() const { return mDeviceTypeAddr.address(); }
-    void setAddress(const std::string &address);
+    std::string address() const { return mDeviceTypeAddr.mAddress; }
+    void setAddress(const std::string &address) { mDeviceTypeAddr.mAddress = address; }
     const AudioDeviceTypeAddr& getDeviceTypeAddr() const { return mDeviceTypeAddr; }
 
     // AudioPortConfig
@@ -55,7 +54,6 @@ public:
 
     // AudioPort
     virtual void toAudioPort(struct audio_port *port) const;
-    virtual void toAudioPort(struct audio_port_v7 *port) const;
 
     status_t setEncapsulationModes(uint32_t encapsulationModes);
     status_t setEncapsulationMetadataTypes(uint32_t encapsulationMetadataTypes);
@@ -63,39 +61,17 @@ public:
     void dump(std::string *dst, int spaces, int index,
               const char* extraInfo = nullptr, bool verbose = true) const;
     void log() const;
-
-    /**
-     * Return a string to describe the DeviceDescriptor.
-     *
-     * @param includeSensitiveInfo sensitive information will be added when it is true.
-     * @return a string that can be used to describe the DeviceDescriptor.
-     */
-    std::string toString(bool includeSensitiveInfo = false) const;
+    std::string toString() const;
 
     bool equals(const sp<DeviceDescriptorBase>& other) const;
 
     status_t writeToParcel(Parcel* parcel) const override;
     status_t readFromParcel(const Parcel* parcel) override;
 
-    status_t writeToParcelable(media::AudioPort* parcelable) const;
-    status_t readFromParcelable(const media::AudioPort& parcelable);
-
 protected:
     AudioDeviceTypeAddr mDeviceTypeAddr;
     uint32_t mEncapsulationModes = 0;
     uint32_t mEncapsulationMetadataTypes = 0;
-private:
-    template <typename T, std::enable_if_t<std::is_same<T, struct audio_port>::value
-                                        || std::is_same<T, struct audio_port_v7>::value, int> = 0>
-    void toAudioPortInternal(T* port) const {
-        AudioPort::toAudioPort(port);
-        toAudioPortConfig(&port->active_config);
-        port->id = mId;
-        port->ext.device.type = mDeviceTypeAddr.mType;
-        port->ext.device.encapsulation_modes = mEncapsulationModes;
-        port->ext.device.encapsulation_metadata_types = mEncapsulationMetadataTypes;
-        (void)audio_utils_strlcpy_zerofill(port->ext.device.address, mDeviceTypeAddr.getAddress());
-    }
 };
 
 using DeviceDescriptorBaseVector = std::vector<sp<DeviceDescriptorBase>>;
@@ -110,11 +86,5 @@ std::string toString(const DeviceDescriptorBaseVector& devices);
  * Return a set of device types and addresses from collection of DeviceDescriptorBase.
  */
 AudioDeviceTypeAddrVector deviceTypeAddrsFromDescriptors(const DeviceDescriptorBaseVector& devices);
-
-// Conversion routines, according to AidlConversion.h conventions.
-ConversionResult<sp<DeviceDescriptorBase>>
-aidl2legacy_DeviceDescriptorBase(const media::AudioPort& aidl);
-ConversionResult<media::AudioPort>
-legacy2aidl_DeviceDescriptorBase(const sp<DeviceDescriptorBase>& legacy);
 
 } // namespace android

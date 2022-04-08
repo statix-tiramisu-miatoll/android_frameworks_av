@@ -169,7 +169,7 @@ void ProductStrategy::dump(String8 *dst, int spaces) const
 }
 
 product_strategy_t ProductStrategyMap::getProductStrategyForAttributes(
-        const audio_attributes_t &attr, bool fallbackOnDefault) const
+        const audio_attributes_t &attr) const
 {
     for (const auto &iter : *this) {
         if (iter.second->matches(attr)) {
@@ -178,7 +178,7 @@ product_strategy_t ProductStrategyMap::getProductStrategyForAttributes(
     }
     ALOGV("%s: No matching product strategy for attributes %s, return default", __FUNCTION__,
           toString(attr).c_str());
-    return fallbackOnDefault? getDefault() : PRODUCT_STRATEGY_NONE;
+    return getDefault();
 }
 
 audio_attributes_t ProductStrategyMap::getAttributesForStreamType(audio_stream_type_t stream) const
@@ -272,8 +272,7 @@ std::string ProductStrategyMap::getDeviceAddressForProductStrategy(product_strat
     return at(psId)->getDeviceAddress();
 }
 
-volume_group_t ProductStrategyMap::getVolumeGroupForAttributes(
-        const audio_attributes_t &attr, bool fallbackOnDefault) const
+volume_group_t ProductStrategyMap::getVolumeGroupForAttributes(const audio_attributes_t &attr) const
 {
     for (const auto &iter : *this) {
         volume_group_t group = iter.second->getVolumeGroupForAttributes(attr);
@@ -281,11 +280,10 @@ volume_group_t ProductStrategyMap::getVolumeGroupForAttributes(
             return group;
         }
     }
-    return fallbackOnDefault ? getDefaultVolumeGroup() : VOLUME_GROUP_NONE;
+    return getDefaultVolumeGroup();
 }
 
-volume_group_t ProductStrategyMap::getVolumeGroupForStreamType(
-        audio_stream_type_t stream, bool fallbackOnDefault) const
+volume_group_t ProductStrategyMap::getVolumeGroupForStreamType(audio_stream_type_t stream) const
 {
     for (const auto &iter : *this) {
         volume_group_t group = iter.second->getVolumeGroupForStreamType(stream);
@@ -294,7 +292,7 @@ volume_group_t ProductStrategyMap::getVolumeGroupForStreamType(
         }
     }
     ALOGW("%s: no volume group for %s, using default", __func__, toString(stream).c_str());
-    return fallbackOnDefault ? getDefaultVolumeGroup() : VOLUME_GROUP_NONE;
+    return getDefaultVolumeGroup();
 }
 
 volume_group_t ProductStrategyMap::getDefaultVolumeGroup() const
@@ -320,15 +318,13 @@ void ProductStrategyMap::dump(String8 *dst, int spaces) const
     }
 }
 
-void dumpProductStrategyDevicesRoleMap(
-        const ProductStrategyDevicesRoleMap& productStrategyDeviceRoleMap,
-        String8 *dst,
-        int spaces) {
-    dst->appendFormat("\n%*sDevice role per product strategy dump:", spaces, "");
-    for (const auto& [strategyRolePair, devices] : productStrategyDeviceRoleMap) {
-        dst->appendFormat("\n%*sStrategy(%u) Device Role(%u) Devices(%s)", spaces + 2, "",
-                strategyRolePair.first, strategyRolePair.second,
-                dumpAudioDeviceTypeAddrVector(devices, true /*includeSensitiveInfo*/).c_str());
+void ProductStrategyPreferredRoutingMap::dump(android::String8* dst, int spaces) const {
+    dst->appendFormat("\n%*sPreferred devices per product strategy dump:", spaces, "");
+    for (const auto& iter : *this) {
+        dst->appendFormat("\n%*sStrategy %u dev:%08x addr:%s",
+                          spaces + 2, "",
+                          (uint32_t) iter.first,
+                          iter.second.mType, iter.second.mAddress.c_str());
     }
     dst->appendFormat("\n");
 }

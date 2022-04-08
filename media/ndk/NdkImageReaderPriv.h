@@ -166,7 +166,7 @@ struct AImageReader : public RefBase {
     native_handle_t*           mWindowHandle = nullptr;
 
     List<AImage*>              mAcquiredImages;
-    bool                       mIsOpen = false;
+    bool                       mIsClosed = false;
 
     Mutex                      mLock;
 };

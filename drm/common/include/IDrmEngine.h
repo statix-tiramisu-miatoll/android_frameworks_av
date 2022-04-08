@@ -250,7 +250,7 @@ public:
 
     /**
      * Removes all the rights information of each plug-in associated with
-     * DRM framework.
+     * DRM framework. Will be used in master reset
      *
      * @param[in] uniqueId Unique identifier for a session
      * @return status_t

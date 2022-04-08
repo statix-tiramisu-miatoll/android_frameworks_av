@@ -17,7 +17,6 @@
 #ifndef VNDK_HIDL_BUFFERPOOL_V2_0_ALLOCATOR_H
 #define VNDK_HIDL_BUFFERPOOL_V2_0_ALLOCATOR_H
 
-#include <pthread.h>
 #include <bufferpool/BufferPoolTypes.h>
 
 using android::hardware::media::bufferpool::V2_0::ResultStatus;
@@ -25,17 +24,6 @@ using android::hardware::media::bufferpool::V2_0::implementation::
     BufferPoolAllocation;
 using android::hardware::media::bufferpool::V2_0::implementation::
     BufferPoolAllocator;
-
-struct IpcMutex {
-  pthread_mutex_t lock;
-  pthread_cond_t cond;
-  int counter = 0;
-  bool signalled = false;
-
-  void init();
-
-  static IpcMutex *Import(void *mem);
-};
 
 // buffer allocator for the tests
 class TestBufferPoolAllocator : public BufferPoolAllocator {
@@ -55,14 +43,9 @@ class TestBufferPoolAllocator : public BufferPoolAllocator {
 
   static bool Verify(const native_handle_t *handle, const unsigned char val);
 
-  static bool MapMemoryForMutex(const native_handle_t *handle, void **mem);
-
-  static bool UnmapMemoryForMutex(void *mem);
 };
 
 // retrieve buffer allocator paramters
 void getTestAllocatorParams(std::vector<uint8_t> *params);
-
-void getIpcMutexParams(std::vector<uint8_t> *params);
 
 #endif  // VNDK_HIDL_BUFFERPOOL_V2_0_ALLOCATOR_H

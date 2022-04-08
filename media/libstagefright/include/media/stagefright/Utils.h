@@ -33,7 +33,7 @@ status_t convertMetaDataToMessage(
         const MetaDataBase *meta, sp<AMessage> *format);
 status_t convertMetaDataToMessage(
         const sp<MetaData> &meta, sp<AMessage> *format);
-status_t convertMessageToMetaData(
+void convertMessageToMetaData(
         const sp<AMessage> &format, sp<MetaData> &meta);
 
 // Returns a pointer to the next NAL start code in buffer of size |length| starting at |data|, or

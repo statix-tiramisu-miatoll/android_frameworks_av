@@ -33,8 +33,8 @@ class MemoryDealer;
 class SkipCutBuffer;
 
 constexpr size_t kLinearBufferSize = 1048576;
-// This can fit an 8K frame.
-constexpr size_t kMaxLinearBufferSize = 7680 * 4320 * 2;
+// This can fit 4K RGBA frame, and most likely client won't need more than this.
+constexpr size_t kMaxLinearBufferSize = 4096 * 2304 * 4;
 
 /**
  * Base class for representation of buffers at one port.
@@ -72,7 +72,7 @@ public:
     /**
      * Return number of buffers the client owns.
      */
-    virtual size_t numActiveSlots() const = 0;
+    virtual size_t numClientBuffers() const = 0;
 
     /**
      * Examine image data from the buffer and update the format if necessary.
@@ -85,9 +85,6 @@ protected:
     const char *mName; ///< C-string version of channel name
     // Format to be used for creating MediaCodec-facing buffers.
     sp<AMessage> mFormat;
-
-    sp<ABuffer> mLastImageData;
-    sp<AMessage> mFormatWithImageData;
 
 private:
     DISALLOW_EVIL_CONSTRUCTORS(CCodecBuffers);
@@ -218,8 +215,10 @@ public:
 
     /**
      * Update SkipCutBuffer from format. The @p format must not be null.
+     * @p notify determines whether the format comes with a buffer that should
+     * be reported to the client or not.
      */
-    void updateSkipCutBuffer(const sp<AMessage> &format);
+    void updateSkipCutBuffer(const sp<AMessage> &format, bool notify = true);
 
     /**
      * Output Stash
@@ -392,6 +391,9 @@ private:
     void setSkipCutBuffer(int32_t skip, int32_t cut);
 
     // Output stash
+
+    // Output format that has not been made available to the client.
+    sp<AMessage> mUnreportedFormat;
 
     // Struct for an entry in the output stash (mPending and mReorderStash)
     struct StashEntry {
@@ -582,7 +584,7 @@ public:
      * Return the number of buffers that are sent to the client but not released
      * yet.
      */
-    size_t numActiveSlots() const;
+    size_t numClientBuffers() const;
 
     /**
      * Return the number of buffers that are sent to the component but not
@@ -703,7 +705,7 @@ public:
      * Return the number of buffers that are sent to the client but not released
      * yet.
      */
-    size_t numActiveSlots() const;
+    size_t numClientBuffers() const;
 
     /**
      * Return the size of the array.
@@ -763,7 +765,7 @@ public:
 
     void flush() override;
 
-    size_t numActiveSlots() const final;
+    size_t numClientBuffers() const final;
 
 protected:
     sp<Codec2Buffer> createNewBuffer() override;
@@ -794,7 +796,7 @@ public:
 
     std::unique_ptr<InputBuffers> toArrayMode(size_t size) final;
 
-    size_t numActiveSlots() const final;
+    size_t numClientBuffers() const final;
 
 protected:
     sp<Codec2Buffer> createNewBuffer() final;
@@ -824,7 +826,7 @@ public:
 
     std::unique_ptr<InputBuffers> toArrayMode(size_t size) override;
 
-    size_t numActiveSlots() const final;
+    size_t numClientBuffers() const final;
 
 protected:
     sp<Codec2Buffer> createNewBuffer() override;
@@ -892,7 +894,7 @@ public:
 
     std::unique_ptr<InputBuffers> toArrayMode(size_t size) final;
 
-    size_t numActiveSlots() const final;
+    size_t numClientBuffers() const final;
 
 protected:
     sp<Codec2Buffer> createNewBuffer() override;
@@ -922,7 +924,7 @@ public:
     std::unique_ptr<InputBuffers> toArrayMode(
             size_t size) final;
 
-    size_t numActiveSlots() const final;
+    size_t numClientBuffers() const final;
 
 protected:
     sp<Codec2Buffer> createNewBuffer() override;
@@ -963,7 +965,7 @@ public:
         array->clear();
     }
 
-    size_t numActiveSlots() const final {
+    size_t numClientBuffers() const final {
         return 0u;
     }
 
@@ -1017,7 +1019,7 @@ public:
 
     void getArray(Vector<sp<MediaCodecBuffer>> *array) const final;
 
-    size_t numActiveSlots() const final;
+    size_t numClientBuffers() const final;
 
     /**
      * Reallocate the array, filled with buffers with the same size as given
@@ -1071,7 +1073,7 @@ public:
 
     std::unique_ptr<OutputBuffersArray> toArrayMode(size_t size) override;
 
-    size_t numActiveSlots() const final;
+    size_t numClientBuffers() const final;
 
     /**
      * Return an appropriate Codec2Buffer object for the type of buffers.

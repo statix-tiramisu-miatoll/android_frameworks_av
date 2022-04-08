@@ -31,7 +31,6 @@
 #include <media/stagefright/CodecBase.h>
 
 #include "CCodecBuffers.h"
-#include "FrameReassembler.h"
 #include "InputSurfaceWrapper.h"
 #include "PipelineWatcher.h"
 
@@ -45,7 +44,6 @@ public:
     virtual void onError(status_t err, enum ActionCode actionCode) = 0;
     virtual void onOutputFramesRendered(int64_t mediaTimeUs, nsecs_t renderTimeNs) = 0;
     virtual void onOutputBuffersChanged() = 0;
-    virtual void onFirstTunnelFrameReady() = 0;
 };
 
 /**
@@ -240,9 +238,7 @@ private:
 
     void feedInputBufferIfAvailable();
     void feedInputBufferIfAvailableInternal();
-    status_t queueInputBufferInternal(sp<MediaCodecBuffer> buffer,
-                                      std::shared_ptr<C2LinearBlock> encryptedBlock = nullptr,
-                                      size_t blockSize = 0);
+    status_t queueInputBufferInternal(sp<MediaCodecBuffer> buffer);
     bool handleWork(
             std::unique_ptr<C2Work> work, const sp<AMessage> &outputFormat,
             const C2StreamInitDataInfo::output *initData);
@@ -273,8 +269,6 @@ private:
         size_t numExtraSlots;
         uint32_t inputDelay;
         uint32_t pipelineDelay;
-
-        FrameReassembler frameReassembler;
     };
     Mutexed<Input> mInput;
     struct Output {
@@ -283,7 +277,7 @@ private:
         uint32_t outputDelay;
     };
     Mutexed<Output> mOutput;
-    Mutexed<std::list<std::unique_ptr<C2Work>>> mFlushedConfigs;
+    Mutexed<std::list<sp<ABuffer>>> mFlushedConfigs;
 
     std::atomic_uint64_t mFrameIndex;
     std::atomic_uint64_t mFirstValidFrameIndex;
@@ -294,7 +288,6 @@ private:
         sp<Surface> surface;
         uint32_t generation;
         int maxDequeueBuffers;
-        std::map<uint64_t, int> rotation;
     };
     Mutexed<OutputSurface> mOutputSurface;
 
@@ -322,7 +315,6 @@ private:
     inline bool hasCryptoOrDescrambler() {
         return mCrypto != nullptr || mDescrambler != nullptr;
     }
-    std::atomic_bool mSendEncryptedInfoBuffer;
 };
 
 // Conversion of a c2_status_t value to a status_t value may depend on the

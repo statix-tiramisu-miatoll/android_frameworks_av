@@ -1,12 +1,7 @@
 {
   "presubmit": [
     {
-      "name": "cameraservice_test"
-    }
-  ],
-  "imports": [
-    {
-      "path": "frameworks/av/camera"
+       "name": "cameraservice_test"
     }
   ]
 }

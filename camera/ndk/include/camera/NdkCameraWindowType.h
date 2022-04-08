@@ -44,12 +44,10 @@
  */
 #ifdef __ANDROID_VNDK__
 #include <cutils/native_handle.h>
-typedef const native_handle_t ACameraWindowType;
+typedef native_handle_t ACameraWindowType;
 #else
 #include <android/native_window.h>
 typedef ANativeWindow ACameraWindowType;
 #endif
-
-/** @} */
 
 #endif //_NDK_CAMERA_WINDOW_TYPE_H

@@ -19,7 +19,6 @@
 #define ANDROID_MEDIA_RESOURCEMANAGERSERVICE_H
 
 #include <map>
-#include <mutex>
 
 #include <aidl/android/media/BnResourceManagerService.h>
 #include <arpa/inet.h>
@@ -34,7 +33,6 @@ namespace android {
 
 class DeathNotifier;
 class ResourceManagerService;
-class ResourceObserverService;
 class ServiceLog;
 struct ProcessInfoInterface;
 
@@ -45,14 +43,14 @@ using ::aidl::android::media::MediaResourceParcel;
 using ::aidl::android::media::MediaResourcePolicyParcel;
 
 typedef std::map<std::tuple<
-        MediaResource::Type, MediaResource::SubType, std::vector<uint8_t>>,
+        MediaResource::Type, MediaResource::SubType, std::vector<int8_t>>,
         MediaResourceParcel> ResourceList;
 
 struct ResourceInfo {
     int64_t clientId;
     uid_t uid;
     std::shared_ptr<IResourceManagerClient> client;
-    uintptr_t cookie{0};
+    sp<DeathNotifier> deathNotifier;
     ResourceList resources;
     bool pendingRemoval{false};
 };
@@ -61,6 +59,22 @@ struct ResourceInfo {
 typedef KeyedVector<int64_t, ResourceInfo> ResourceInfos;
 typedef KeyedVector<int, ResourceInfos> PidResourceInfosMap;
 
+class DeathNotifier : public RefBase {
+public:
+    DeathNotifier(const std::shared_ptr<ResourceManagerService> &service,
+            int pid, int64_t clientId);
+
+    ~DeathNotifier() {}
+
+    // Implement death recipient
+    static void BinderDiedCallback(void* cookie);
+    void binderDied();
+
+private:
+    std::weak_ptr<ResourceManagerService> mService;
+    int mPid;
+    int64_t mClientId;
+};
 class ResourceManagerService : public BnResourceManagerService {
 public:
     struct SystemCallbackInterface : public RefBase {
@@ -81,8 +95,6 @@ public:
             const sp<ProcessInfoInterface> &processInfo,
             const sp<SystemCallbackInterface> &systemResource);
     virtual ~ResourceManagerService();
-    void setObserverService(
-            const std::shared_ptr<ResourceObserverService>& observerService);
 
     // IResourceManagerService interface
     Status config(const std::vector<MediaResourcePolicyParcel>& policies) override;
@@ -113,27 +125,12 @@ public:
             int originalPid,
             int newPid) override;
 
-    Status overrideProcessInfo(
-            const std::shared_ptr<IResourceManagerClient>& client,
-            int pid,
-            int procState,
-            int oomScore) override;
-
     Status markClientForPendingRemoval(int32_t pid, int64_t clientId) override;
-
-    Status reclaimResourcesFromClientsPendingRemoval(int32_t pid) override;
 
     Status removeResource(int pid, int64_t clientId, bool checkValid);
 
 private:
     friend class ResourceManagerServiceTest;
-    friend class DeathNotifier;
-    friend class OverrideProcessInfoDeathNotifier;
-
-    // Reclaims resources from |clients|. Returns true if reclaim succeeded
-    // for all clients.
-    bool reclaimInternal(
-            const Vector<std::shared_ptr<IResourceManagerClient>> &clients);
 
     // Gets the list of all the clients who own the specified resource type.
     // Returns false if any client belongs to a process with higher priority than the
@@ -173,12 +170,6 @@ private:
     // Get priority from process's pid
     bool getPriority_l(int pid, int* priority);
 
-    void removeProcessInfoOverride(int pid);
-
-    void removeProcessInfoOverride_l(int pid);
-    uintptr_t addCookieAndLink_l(::ndk::SpAIBinder binder, const sp<DeathNotifier>& notifier);
-    void removeCookieAndUnlink_l(::ndk::SpAIBinder binder, uintptr_t cookie);
-
     mutable Mutex mLock;
     sp<ProcessInfoInterface> mProcessInfo;
     sp<SystemCallbackInterface> mSystemCB;
@@ -188,17 +179,7 @@ private:
     bool mSupportsSecureWithNonSecureCodec;
     int32_t mCpuBoostCount;
     ::ndk::ScopedAIBinder_DeathRecipient mDeathRecipient;
-    struct ProcessInfoOverride {
-        uintptr_t cookie;
-        std::shared_ptr<IResourceManagerClient> client;
-    };
     std::map<int, int> mOverridePidMap;
-    std::map<pid_t, ProcessInfoOverride> mProcessInfoOverrideMap;
-    static std::mutex sCookieLock;
-    static uintptr_t sCookieCounter GUARDED_BY(sCookieLock);
-    static std::map<uintptr_t, sp<DeathNotifier> > sCookieToDeathNotifierMap
-            GUARDED_BY(sCookieLock);
-    std::shared_ptr<ResourceObserverService> mObserverService;
 };
 
 // ----------------------------------------------------------------------------

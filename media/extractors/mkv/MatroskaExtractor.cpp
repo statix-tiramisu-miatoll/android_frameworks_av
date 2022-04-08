@@ -1700,17 +1700,17 @@ status_t MatroskaExtractor::synthesizeMPEG2(TrackInfo *trackInfo, size_t index) 
         return ERROR_MALFORMED;
     }
 
-    long header_start = 0;
-    long header_length = 0;
+    size_t header_start = 0;
+    size_t header_lenth = 0;
     for (header_start = 0; header_start < frame.len - 4; header_start++) {
         if (ntohl(0x000001b3) == *(uint32_t*)((uint8_t*)tmpData.get() + header_start)) {
             break;
         }
     }
     bool isComplete_csd = false;
-    for (header_length = 0; header_length < frame.len - 4 - header_start; header_length++) {
+    for (header_lenth = 0; header_lenth < frame.len - 4 - header_start; header_lenth++) {
         if (ntohl(0x000001b8) == *(uint32_t*)((uint8_t*)tmpData.get()
-                                + header_start + header_length)) {
+                                + header_start + header_lenth)) {
             isComplete_csd = true;
             break;
         }
@@ -1720,7 +1720,7 @@ status_t MatroskaExtractor::synthesizeMPEG2(TrackInfo *trackInfo, size_t index) 
         return ERROR_MALFORMED;
     }
     addESDSFromCodecPrivate(trackInfo->mMeta, false,
-                            (uint8_t*)(tmpData.get()) + header_start, header_length);
+                              (uint8_t*)(tmpData.get()) + header_start, header_lenth);
 
     return OK;
 
@@ -1888,12 +1888,13 @@ status_t MatroskaExtractor::initTrackInfo(
 
     for(size_t i = 0; i < track->GetContentEncodingCount(); i++) {
         const mkvparser::ContentEncoding *encoding = track->GetContentEncodingByIndex(i);
-        if (encoding->GetEncryptionCount() > 0) {
+        for(size_t j = 0; j < encoding->GetEncryptionCount(); j++) {
             const mkvparser::ContentEncoding::ContentEncryption *encryption;
-            encryption = encoding->GetEncryptionByIndex(0);
+            encryption = encoding->GetEncryptionByIndex(j);
             AMediaFormat_setBuffer(trackInfo->mMeta,
                     AMEDIAFORMAT_KEY_CRYPTO_KEY, encryption->key_id, encryption->key_id_len);
             trackInfo->mEncrypted = true;
+            break;
         }
 
         for(size_t j = 0; j < encoding->GetCompressionCount(); j++) {

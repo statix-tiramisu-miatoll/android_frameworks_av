@@ -27,15 +27,12 @@
 #include <gui/Surface.h>
 #include <gui/Surface.h>
 
-#include <camera/CameraSessionStats.h>
-
 #include "common/Camera2ClientBase.h"
 
 #include "api2/CameraDeviceClient.h"
 
 #include "device3/Camera3Device.h"
 #include "utils/CameraThreadState.h"
-#include "utils/CameraServiceProxyWrapper.h"
 
 namespace android {
 using namespace camera2;
@@ -47,21 +44,18 @@ Camera2ClientBase<TClientBase>::Camera2ClientBase(
         const sp<CameraService>& cameraService,
         const sp<TCamCallbacks>& remoteCallback,
         const String16& clientPackageName,
-        const std::optional<String16>& clientFeatureId,
+        const std::unique_ptr<String16>& clientFeatureId,
         const String8& cameraId,
         int api1CameraId,
         int cameraFacing,
-        int sensorOrientation,
         int clientPid,
         uid_t clientUid,
-        int servicePid,
-        bool overrideForPerfClass):
+        int servicePid):
         TClientBase(cameraService, remoteCallback, clientPackageName, clientFeatureId,
-                cameraId, api1CameraId, cameraFacing, sensorOrientation, clientPid, clientUid,
-                servicePid),
+                cameraId, api1CameraId, cameraFacing, clientPid, clientUid, servicePid),
         mSharedCameraCallbacks(remoteCallback),
         mDeviceVersion(cameraService->getDeviceVersion(TClientBase::mCameraIdStr)),
-        mDevice(new Camera3Device(cameraId, overrideForPerfClass)),
+        mDevice(new Camera3Device(cameraId)),
         mDeviceActive(false), mApi1CameraId(api1CameraId)
 {
     ALOGI("Camera %s: Opened. Client: %s (PID %d, UID %d)", cameraId.string(),
@@ -196,18 +190,11 @@ binder::Status Camera2ClientBase<TClientBase>::disconnect() {
 
     ALOGV("Camera %s: Shutting down", TClientBase::mCameraIdStr.string());
 
-    // Before detaching the device, cache the info from current open session.
-    // The disconnected check avoids duplication of info and also prevents
-    // deadlock while acquiring service lock in cacheDump.
-    if (!TClientBase::mDisconnected) {
-        Camera2ClientBase::getCameraService()->cacheDump();
-    }
-
     detachDevice();
 
     CameraService::BasicClient::disconnect();
 
-    ALOGV("Camera %s: Shut down complete", TClientBase::mCameraIdStr.string());
+    ALOGV("Camera %s: Shut down complete complete", TClientBase::mCameraIdStr.string());
 
     return res;
 }
@@ -258,34 +245,13 @@ void Camera2ClientBase<TClientBase>::notifyError(
 }
 
 template <typename TClientBase>
-status_t Camera2ClientBase<TClientBase>::notifyActive() {
-    if (!mDeviceActive) {
-        status_t res = TClientBase::startCameraStreamingOps();
-        if (res != OK) {
-            ALOGE("%s: Camera %s: Error starting camera streaming ops: %d", __FUNCTION__,
-                    TClientBase::mCameraIdStr.string(), res);
-            return res;
-        }
-        CameraServiceProxyWrapper::logActive(TClientBase::mCameraIdStr);
-    }
-    mDeviceActive = true;
-
-    ALOGV("Camera device is now active");
-    return OK;
-}
-
-template <typename TClientBase>
-void Camera2ClientBase<TClientBase>::notifyIdle(
-        int64_t requestCount, int64_t resultErrorCount, bool deviceError,
-        const std::vector<hardware::CameraStreamStats>& streamStats) {
+void Camera2ClientBase<TClientBase>::notifyIdle() {
     if (mDeviceActive) {
-        status_t res = TClientBase::finishCameraStreamingOps();
-        if (res != OK) {
-            ALOGE("%s: Camera %s: Error finishing streaming ops: %d", __FUNCTION__,
-                    TClientBase::mCameraIdStr.string(), res);
-        }
-        CameraServiceProxyWrapper::logIdle(TClientBase::mCameraIdStr,
-                requestCount, resultErrorCount, deviceError, streamStats);
+        getCameraService()->updateProxyDeviceState(
+            hardware::ICameraServiceProxy::CAMERA_STATE_IDLE, TClientBase::mCameraIdStr,
+            TClientBase::mCameraFacing, TClientBase::mClientPackageName,
+            ((mApi1CameraId < 0) ? hardware::ICameraServiceProxy::CAMERA_API_LEVEL_2 :
+             hardware::ICameraServiceProxy::CAMERA_API_LEVEL_1));
     }
     mDeviceActive = false;
 
@@ -297,6 +263,15 @@ void Camera2ClientBase<TClientBase>::notifyShutter(const CaptureResultExtras& re
                                                    nsecs_t timestamp) {
     (void)resultExtras;
     (void)timestamp;
+
+    if (!mDeviceActive) {
+        getCameraService()->updateProxyDeviceState(
+            hardware::ICameraServiceProxy::CAMERA_STATE_ACTIVE, TClientBase::mCameraIdStr,
+            TClientBase::mCameraFacing, TClientBase::mClientPackageName,
+            ((mApi1CameraId < 0) ? hardware::ICameraServiceProxy::CAMERA_API_LEVEL_2 :
+             hardware::ICameraServiceProxy::CAMERA_API_LEVEL_1));
+    }
+    mDeviceActive = true;
 
     ALOGV("%s: Shutter notification for request id %" PRId32 " at time %" PRId64,
             __FUNCTION__, resultExtras.requestId, timestamp);

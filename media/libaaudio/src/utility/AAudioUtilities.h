@@ -21,7 +21,6 @@
 #include <functional>
 #include <stdint.h>
 #include <sys/types.h>
-#include <unistd.h>
 
 #include <utils/Errors.h>
 #include <system/audio.h>

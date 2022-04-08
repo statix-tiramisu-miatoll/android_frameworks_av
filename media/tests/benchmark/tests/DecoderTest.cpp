@@ -84,8 +84,7 @@ TEST_P(DecoderTest, Decode) {
         decoder->deInitCodec();
         ALOGV("codec : %s", codecName.c_str());
         string inputReference = get<0>(params);
-        decoder->dumpStatistics(inputReference, codecName, (asyncMode ? "async" : "sync"),
-                                gEnv->getStatsFile());
+        decoder->dumpStatistics(inputReference);
         free(inputBuffer);
         decoder->resetDecoder();
     }
@@ -180,11 +179,8 @@ int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     int status = gEnv->initFromOptions(argc, argv);
     if (status == 0) {
-        gEnv->setStatsFile("Decoder.csv");
-        status = gEnv->writeStatsHeader();
-        ALOGV("Stats file = %d\n", status);
         status = RUN_ALL_TESTS();
-        ALOGV("Decoder Test result = %d\n", status);
+        ALOGD("Decoder Test result = %d\n", status);
     }
     return status;
 }

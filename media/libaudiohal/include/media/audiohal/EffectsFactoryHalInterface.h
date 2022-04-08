@@ -46,8 +46,6 @@ class EffectsFactoryHalInterface : public RefBase
 
     virtual status_t dumpEffects(int fd) = 0;
 
-    virtual float getHalVersion() = 0;
-
     static sp<EffectsFactoryHalInterface> create();
 
     virtual status_t allocateBuffer(size_t size, sp<EffectBufferHalInterface>* buffer) = 0;

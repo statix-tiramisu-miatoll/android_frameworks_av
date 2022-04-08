@@ -92,7 +92,6 @@ ALookup<C2Config::profile_t, int32_t> sAvcProfiles = {
 
 ALookup<C2Config::bitrate_mode_t, int32_t> sBitrateModes = {
     { C2Config::BITRATE_CONST,      BITRATE_MODE_CBR },
-    { C2Config::BITRATE_CONST_SKIP_ALLOWED, BITRATE_MODE_CBR_FD },
     { C2Config::BITRATE_VARIABLE,   BITRATE_MODE_VBR },
     { C2Config::BITRATE_IGNORE,     BITRATE_MODE_CQ },
 };
@@ -312,8 +311,6 @@ ALookup<C2Config::pcm_encoding_t, int32_t> sPcmEncodings = {
     { C2Config::PCM_8, kAudioEncodingPcm8bit },
     { C2Config::PCM_16, kAudioEncodingPcm16bit },
     { C2Config::PCM_FLOAT, kAudioEncodingPcmFloat },
-    { C2Config::PCM_24, kAudioEncodingPcm24bitPacked },
-    { C2Config::PCM_32, kAudioEncodingPcm32bit },
 };
 
 ALookup<C2Config::level_t, int32_t> sVp9Levels = {
@@ -961,16 +958,17 @@ bool C2Mapper::mapPixelFormatFrameworkToCodec(
             *c2Value = HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
             return true;
         case COLOR_FormatYUV420Flexible:
+            *c2Value = HAL_PIXEL_FORMAT_YCBCR_420_888;
+            return true;
         case COLOR_FormatYUV420Planar:
         case COLOR_FormatYUV420SemiPlanar:
         case COLOR_FormatYUV420PackedPlanar:
         case COLOR_FormatYUV420PackedSemiPlanar:
-            *c2Value = HAL_PIXEL_FORMAT_YCBCR_420_888;
+            *c2Value = HAL_PIXEL_FORMAT_YV12;
             return true;
         default:
-            // Passthrough
-            *c2Value = uint32_t(frameworkValue);
-            return true;
+            // TODO: support some sort of passthrough
+            return false;
     }
 }
 
@@ -981,16 +979,11 @@ bool C2Mapper::mapPixelFormatCodecToFramework(
         case HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED:
             *frameworkValue = COLOR_FormatSurface;
             return true;
-        case HAL_PIXEL_FORMAT_YCBCR_422_SP:
-        case HAL_PIXEL_FORMAT_YCRCB_420_SP:
-        case HAL_PIXEL_FORMAT_YCBCR_422_I:
-        case HAL_PIXEL_FORMAT_YCBCR_420_888:
         case HAL_PIXEL_FORMAT_YV12:
+        case HAL_PIXEL_FORMAT_YCBCR_420_888:
             *frameworkValue = COLOR_FormatYUV420Flexible;
             return true;
         default:
-            // Passthrough
-            *frameworkValue = int32_t(c2Value);
-            return true;
+            return false;
     }
 }

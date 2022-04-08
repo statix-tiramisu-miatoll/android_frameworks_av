@@ -175,10 +175,10 @@ public class Encoder {
 
                 @Override
                 public void onError(@NonNull MediaCodec mediaCodec, @NonNull CodecException e) {
-                    mSignalledError = true;
-                    Log.e(TAG, "Codec Error: " + e.toString());
+                    mediaCodec.stop();
+                    mediaCodec.release();
+                    Log.e(TAG, "CodecError: " + e.toString());
                     e.printStackTrace();
-                    synchronized (mLock) { mLock.notify(); }
                 }
 
                 @Override

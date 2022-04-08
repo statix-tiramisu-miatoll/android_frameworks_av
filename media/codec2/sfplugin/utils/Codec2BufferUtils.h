@@ -18,7 +18,6 @@
 #define CODEC2_BUFFER_UTILS_H_
 
 #include <C2Buffer.h>
-#include <C2Config.h>
 #include <C2ParamDef.h>
 
 #include <media/hardware/VideoAPI.h>
@@ -40,8 +39,7 @@ namespace android {
  */
 status_t ConvertRGBToPlanarYUV(
         uint8_t *dstY, size_t dstStride, size_t dstVStride, size_t bufferSize,
-        const C2GraphicView &src, C2Color::matrix_t colorMatrix = C2Color::MATRIX_BT601,
-        C2Color::range_t colorRange = C2Color::RANGE_LIMITED);
+        const C2GraphicView &src);
 
 /**
  * Returns a planar YUV 420 8-bit media image descriptor.
@@ -98,11 +96,6 @@ bool IsYUV420(const C2GraphicView &view);
 bool IsNV12(const C2GraphicView &view);
 
 /**
- * Returns true iff a view has a NV21 layout.
- */
-bool IsNV21(const C2GraphicView &view);
-
-/**
  * Returns true iff a view has a I420 layout.
  */
 bool IsI420(const C2GraphicView &view);
@@ -118,25 +111,9 @@ bool IsYUV420(const MediaImage2 *img);
 bool IsNV12(const MediaImage2 *img);
 
 /**
- * Returns true iff a MediaImage2 has a NV21 layout.
- */
-bool IsNV21(const MediaImage2 *img);
-
-/**
  * Returns true iff a MediaImage2 has a I420 layout.
  */
 bool IsI420(const MediaImage2 *img);
-
-enum FlexLayout {
-    FLEX_LAYOUT_UNKNOWN,
-    FLEX_LAYOUT_PLANAR,
-    FLEX_LAYOUT_SEMIPLANAR_UV,
-    FLEX_LAYOUT_SEMIPLANAR_VU,
-};
-/**
- * Returns layout of YCBCR_420_888 pixel format.
- */
-FlexLayout GetYuv420FlexibleLayout();
 
 /**
  * A raw memory block to use for internal buffers.

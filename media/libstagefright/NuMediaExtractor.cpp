@@ -50,9 +50,8 @@ NuMediaExtractor::Sample::Sample(MediaBufferBase *buffer, int64_t timeUs)
       mSampleTimeUs(timeUs) {
 }
 
-NuMediaExtractor::NuMediaExtractor(EntryPoint entryPoint)
-    : mEntryPoint(entryPoint),
-      mTotalBitrate(-1LL),
+NuMediaExtractor::NuMediaExtractor()
+    : mTotalBitrate(-1LL),
       mDurationUs(-1LL) {
 }
 
@@ -94,7 +93,6 @@ status_t NuMediaExtractor::setDataSource(
     if (mImpl == NULL) {
         return ERROR_UNSUPPORTED;
     }
-    setEntryPointToRemoteMediaExtractor();
 
     status_t err = OK;
     if (!mCasToken.empty()) {
@@ -136,7 +134,6 @@ status_t NuMediaExtractor::setDataSource(int fd, off64_t offset, off64_t size) {
     if (mImpl == NULL) {
         return ERROR_UNSUPPORTED;
     }
-    setEntryPointToRemoteMediaExtractor();
 
     if (!mCasToken.empty()) {
         err = mImpl->setMediaCas(mCasToken);
@@ -171,7 +168,6 @@ status_t NuMediaExtractor::setDataSource(const sp<DataSource> &source) {
     if (mImpl == NULL) {
         return ERROR_UNSUPPORTED;
     }
-    setEntryPointToRemoteMediaExtractor();
 
     if (!mCasToken.empty()) {
         err = mImpl->setMediaCas(mCasToken);
@@ -187,11 +183,6 @@ status_t NuMediaExtractor::setDataSource(const sp<DataSource> &source) {
     }
 
     return err;
-}
-
-const char* NuMediaExtractor::getName() const {
-    Mutex::Autolock autoLock(mLock);
-    return mImpl == nullptr ? nullptr : mImpl->name().string();
 }
 
 static String8 arrayToString(const std::vector<uint8_t> &array) {
@@ -307,16 +298,8 @@ status_t NuMediaExtractor::getFileFormat(sp<AMessage> *format) const {
 
     sp<MetaData> meta = mImpl->getMetaData();
 
-    if (meta == nullptr) {
-        //extractor did not publish file metadata
-        return -EINVAL;
-    }
-
     const char *mime;
-    if (!meta->findCString(kKeyMIMEType, &mime)) {
-        // no mime type maps to invalid
-        return -EINVAL;
-    }
+    CHECK(meta->findCString(kKeyMIMEType, &mime));
     *format = new AMessage();
     (*format)->setString("mime", mime);
 
@@ -327,27 +310,6 @@ status_t NuMediaExtractor::getFileFormat(sp<AMessage> *format) const {
         sp<ABuffer> buf = new ABuffer(psshsize);
         memcpy(buf->data(), pssh, psshsize);
         (*format)->setBuffer("pssh", buf);
-    }
-
-    // Copy over the slow-motion related metadata
-    const void *slomoMarkers;
-    size_t slomoMarkersSize;
-    if (meta->findData(kKeySlowMotionMarkers, &type, &slomoMarkers, &slomoMarkersSize)
-            && slomoMarkersSize > 0) {
-        sp<ABuffer> buf = new ABuffer(slomoMarkersSize);
-        memcpy(buf->data(), slomoMarkers, slomoMarkersSize);
-        (*format)->setBuffer("slow-motion-markers", buf);
-    }
-
-    int32_t temporalLayerCount;
-    if (meta->findInt32(kKeyTemporalLayerCount, &temporalLayerCount)
-            && temporalLayerCount > 0) {
-        (*format)->setInt32("temporal-layer-count", temporalLayerCount);
-    }
-
-    float captureFps;
-    if (meta->findFloat(kKeyCaptureFramerate, &captureFps) && captureFps > 0.0f) {
-        (*format)->setFloat("capture-rate", captureFps);
     }
 
     return OK;
@@ -361,11 +323,6 @@ status_t NuMediaExtractor::getExifOffsetSize(off64_t *offset, size_t *size) cons
     }
 
     sp<MetaData> meta = mImpl->getMetaData();
-
-    if (meta == nullptr) {
-        //extractor did not publish file metadata
-        return -EINVAL;
-    }
 
     int64_t exifOffset, exifSize;
     if (meta->findInt64(kKeyExifOffset, &exifOffset)
@@ -508,16 +465,6 @@ void NuMediaExtractor::releaseTrackSamples(TrackInfo *info) {
 void NuMediaExtractor::releaseAllTrackSamples() {
     for (size_t i = 0; i < mSelectedTracks.size(); ++i) {
         releaseTrackSamples(&mSelectedTracks.editItemAt(i));
-    }
-}
-
-void NuMediaExtractor::setEntryPointToRemoteMediaExtractor() {
-    if (mImpl == NULL) {
-        return;
-    }
-    status_t err = mImpl->setEntryPoint(mEntryPoint);
-    if (err != OK) {
-        ALOGW("Failed to set entry point with error %d.", err);
     }
 }
 
@@ -896,17 +843,6 @@ status_t NuMediaExtractor::getAudioPresentations(
     }
     ALOGV("Source does not contain any audio presentation");
     return ERROR_UNSUPPORTED;
-}
-
-status_t NuMediaExtractor::setLogSessionId(const String8& logSessionId) {
-    if (mImpl == nullptr) {
-        return ERROR_UNSUPPORTED;
-    }
-    status_t status = mImpl->setLogSessionId(logSessionId);
-    if (status != OK) {
-        ALOGW("Failed to set log session id: %d.", status);
-    }
-    return status;
 }
 
 }  // namespace android

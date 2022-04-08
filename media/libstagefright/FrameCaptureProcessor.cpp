@@ -164,15 +164,14 @@ status_t FrameCaptureProcessor::onCapture(const sp<Layer> &layer,
 
     if (err != OK) {
         ALOGE("drawLayers returned err %d", err);
-    } else {
-        err = fence->wait(500);
-        if (err != OK) {
-            ALOGW("wait for fence returned err %d", err);
-            err = OK;
-        }
+        return err;
     }
-    mRE->cleanupPostRender(renderengine::RenderEngine::CleanupMode::CLEAN_ALL);
-    return err;
+
+    err = fence->wait(500);
+    if (err != OK) {
+        ALOGW("wait for fence returned err %d", err);
+    }
+    return OK;
 }
 
 void FrameCaptureProcessor::onMessageReceived(const sp<AMessage> &msg) {

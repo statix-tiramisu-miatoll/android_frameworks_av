@@ -24,6 +24,7 @@
 #include <cpustats/ThreadCpuUsage.h>
 #endif
 #endif
+#include <utils/Debug.h>
 #include <utils/Log.h>
 #include "FastMixerDumpState.h"
 

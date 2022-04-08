@@ -25,6 +25,9 @@
 
 #include <android/hardware/camera/device/3.2/ICameraDevice.h>
 
+// TODO: remove legacy camera3.h references
+#include "hardware/camera3.h"
+
 #include <device3/Camera3OutputInterface.h>
 
 namespace android {
@@ -155,7 +158,7 @@ namespace camera3 {
 
     static const uint64_t BUFFER_ID_NO_BUFFER = 0;
 
-    camera_buffer_status_t mapHidlBufferStatus(
+    camera3_buffer_status_t mapHidlBufferStatus(
             hardware::camera::device::V3_2::BufferStatus status);
 } // namespace camera3
 

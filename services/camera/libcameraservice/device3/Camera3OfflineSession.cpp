@@ -176,7 +176,7 @@ status_t Camera3OfflineSession::disconnectImpl() {
 
     FlushInflightReqStates states {
         mId, mOfflineReqsLock, mOfflineReqs, mUseHalBufManager,
-        listener, *this, mBufferRecords, *this, mSessionStatsBuilder};
+        listener, *this, mBufferRecords, *this};
 
     camera3::flushInflightRequests(states);
 
@@ -260,8 +260,7 @@ hardware::Return<void> Camera3OfflineSession::processCaptureResult_3_4(
         mUseHalBufManager, mUsePartialResult, mNeedFixupMonochromeTags,
         mNumPartialResults, mVendorTagId, mDeviceInfo, mPhysicalDeviceInfoMap,
         mResultMetadataQueue, mDistortionMappers, mZoomRatioMappers, mRotateAndCropMappers,
-        mTagMonitor, mInputStream, mOutputStreams, mSessionStatsBuilder, listener, *this, *this,
-        mBufferRecords
+        mTagMonitor, mInputStream, mOutputStreams, listener, *this, *this, mBufferRecords
     };
 
     std::lock_guard<std::mutex> lock(mProcessCaptureResultLock);
@@ -300,8 +299,7 @@ hardware::Return<void> Camera3OfflineSession::processCaptureResult(
         mUseHalBufManager, mUsePartialResult, mNeedFixupMonochromeTags,
         mNumPartialResults, mVendorTagId, mDeviceInfo, mPhysicalDeviceInfoMap,
         mResultMetadataQueue, mDistortionMappers, mZoomRatioMappers, mRotateAndCropMappers,
-        mTagMonitor, mInputStream, mOutputStreams, mSessionStatsBuilder, listener, *this, *this,
-        mBufferRecords
+        mTagMonitor, mInputStream, mOutputStreams, listener, *this, *this, mBufferRecords
     };
 
     std::lock_guard<std::mutex> lock(mProcessCaptureResultLock);
@@ -335,8 +333,7 @@ hardware::Return<void> Camera3OfflineSession::notify(
         mUseHalBufManager, mUsePartialResult, mNeedFixupMonochromeTags,
         mNumPartialResults, mVendorTagId, mDeviceInfo, mPhysicalDeviceInfoMap,
         mResultMetadataQueue, mDistortionMappers, mZoomRatioMappers, mRotateAndCropMappers,
-        mTagMonitor, mInputStream, mOutputStreams, mSessionStatsBuilder, listener, *this, *this,
-        mBufferRecords
+        mTagMonitor, mInputStream, mOutputStreams, listener, *this, *this, mBufferRecords
     };
     for (const auto& msg : msgs) {
         camera3::notify(states, msg);
@@ -356,7 +353,7 @@ hardware::Return<void> Camera3OfflineSession::requestStreamBuffers(
     }
 
     RequestBufferStates states {
-        mId, mRequestBufferInterfaceLock, mUseHalBufManager, mOutputStreams, mSessionStatsBuilder,
+        mId, mRequestBufferInterfaceLock, mUseHalBufManager, mOutputStreams,
         *this, mBufferRecords, *this};
     camera3::requestStreamBuffers(states, bufReqs, _hidl_cb);
     return hardware::Void();
@@ -373,7 +370,7 @@ hardware::Return<void> Camera3OfflineSession::returnStreamBuffers(
     }
 
     ReturnBufferStates states {
-        mId, mUseHalBufManager, mOutputStreams, mSessionStatsBuilder, mBufferRecords};
+        mId, mUseHalBufManager, mOutputStreams, mBufferRecords};
     camera3::returnStreamBuffers(states, buffers);
     return hardware::Void();
 }

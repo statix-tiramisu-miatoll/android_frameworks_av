@@ -59,7 +59,7 @@ sp<IMediaExtractor> MediaExtractorFactory::Create(
             sp<IMediaExtractor> ex;
             mediaExService->makeExtractor(
                     CreateIDataSourceFromDataSource(source),
-                    mime ? std::optional<std::string>(mime) : std::nullopt,
+                    mime ? std::make_unique<std::string>(mime) : nullptr,
                     &ex);
             return ex;
         } else {
@@ -188,11 +188,11 @@ void MediaExtractorFactory::RegisterExtractor(const sp<ExtractorPlugin> &plugin,
     // sanity check check struct version, uuid, name
     if (plugin->def.def_version != EXTRACTORDEF_VERSION_NDK_V1 &&
             plugin->def.def_version != EXTRACTORDEF_VERSION_NDK_V2) {
-        ALOGW("don't understand extractor format %u, ignoring.", plugin->def.def_version);
+        ALOGE("don't understand extractor format %u, ignoring.", plugin->def.def_version);
         return;
     }
     if (memcmp(&plugin->def.extractor_uuid, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) == 0) {
-        ALOGW("invalid UUID, ignoring");
+        ALOGE("invalid UUID, ignoring");
         return;
     }
     if (plugin->def.extractor_name == NULL || strlen(plugin->def.extractor_name) == 0) {
@@ -244,18 +244,13 @@ void MediaExtractorFactory::RegisterExtractors(
             void *libHandle = android_dlopen_ext(
                     libPath.string(),
                     RTLD_NOW | RTLD_LOCAL, dlextinfo);
-            if (libHandle == nullptr) {
-                ALOGI("dlopen(%s) reported error %s", libPath.string(), strerror(errno));
-                continue;
-            }
+            CHECK(libHandle != nullptr)
+                    << "couldn't dlopen(" << libPath.string() << ") " << strerror(errno);
 
             GetExtractorDef getDef =
                 (GetExtractorDef) dlsym(libHandle, "GETEXTRACTORDEF");
-            if (getDef == nullptr) {
-                ALOGI("no sniffer found in %s", libPath.string());
-                dlclose(libHandle);
-                continue;
-            }
+            CHECK(getDef != nullptr)
+                    << libPath.string() << " does not contain sniffer";
 
             ALOGV("registering sniffer for %s", libPath.string());
             RegisterExtractor(
@@ -263,7 +258,7 @@ void MediaExtractorFactory::RegisterExtractors(
         }
         closedir(libDir);
     } else {
-        ALOGI("plugin directory not present (%s)", libDirPath);
+        ALOGE("couldn't opendir(%s)", libDirPath);
     }
 }
 

@@ -22,7 +22,6 @@
 
 #include <binder/Parcel.h>
 #include <camera/CameraMetadata.h>
-#include <camera_metadata_hidden.h>
 
 namespace android {
 
@@ -168,11 +167,6 @@ size_t CameraMetadata::entryCount() const {
 
 bool CameraMetadata::isEmpty() const {
     return entryCount() == 0;
-}
-
-size_t CameraMetadata::bufferSize() const {
-    return (mBuffer == NULL) ? 0 :
-            get_camera_metadata_size(mBuffer);
 }
 
 status_t CameraMetadata::sort() {
@@ -528,8 +522,6 @@ status_t CameraMetadata::resizeIfNeeded(size_t extraEntries, size_t extraData) {
             mBuffer = allocate_camera_metadata(newEntryCount,
                     newDataCount);
             if (mBuffer == NULL) {
-                // Maintain old buffer to avoid potential memory leak.
-                mBuffer = oldBuffer;
                 ALOGE("%s: Can't allocate larger metadata buffer", __FUNCTION__);
                 return NO_MEMORY;
             }
@@ -880,8 +872,5 @@ status_t CameraMetadata::getTagFromName(const char *name,
     return OK;
 }
 
-metadata_vendor_id_t CameraMetadata::getVendorId() {
-    return get_camera_metadata_vendor_id(mBuffer);
-}
 
 }; // namespace android

@@ -240,16 +240,6 @@ void MtpProperty::setCurrentValue(const uint16_t* string) {
         mCurrentValue.str = NULL;
 }
 
-void MtpProperty::setCurrentValue(const char* string) {
-    free(mCurrentValue.str);
-    if (string) {
-        MtpStringBuffer buffer(string);
-        mCurrentValue.str = strdup(buffer);
-    }
-    else
-        mCurrentValue.str = NULL;
-}
-
 void MtpProperty::setCurrentValue(MtpDataPacket& packet) {
     free(mCurrentValue.str);
     mCurrentValue.str = NULL;

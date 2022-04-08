@@ -27,7 +27,7 @@
 
 using namespace android;
 using namespace android::camera3;
-using DistortionMapperInfo = android::camera3::DistortionMapper::DistortionMapperInfo;
+
 
 int32_t testActiveArray[] = {100, 100, 1000, 750};
 int32_t testPreCorrActiveArray[] = {90, 90, 1020, 770};
@@ -132,15 +132,14 @@ TEST(DistortionMapperTest, IdentityTransform) {
             /*preCorrectionActiveArray*/ testActiveArray);
 
     auto coords = basicCoords;
-    DistortionMapperInfo *mapperInfo = m.getMapperInfo();
-    res = m.mapCorrectedToRaw(coords.data(), 5, mapperInfo, /*clamp*/true);
+    res = m.mapCorrectedToRaw(coords.data(), 5,  /*clamp*/true);
     ASSERT_EQ(res, OK);
 
     for (size_t i = 0; i < coords.size(); i++) {
         EXPECT_EQ(coords[i], basicCoords[i]);
     }
 
-    res = m.mapRawToCorrected(coords.data(), 5, mapperInfo, /*clamp*/true);
+    res = m.mapRawToCorrected(coords.data(), 5, /*clamp*/true);
     ASSERT_EQ(res, OK);
 
     for (size_t i = 0; i < coords.size(); i++) {
@@ -153,14 +152,14 @@ TEST(DistortionMapperTest, IdentityTransform) {
     };
 
     auto rectsOrig = rects;
-    res = m.mapCorrectedRectToRaw(rects.data(), 2, mapperInfo, /*clamp*/true);
+    res = m.mapCorrectedRectToRaw(rects.data(), 2, /*clamp*/true);
     ASSERT_EQ(res, OK);
 
     for (size_t i = 0; i < rects.size(); i++) {
         EXPECT_EQ(rects[i], rectsOrig[i]);
     }
 
-    res = m.mapRawRectToCorrected(rects.data(), 2, mapperInfo, /*clamp*/true);
+    res = m.mapRawRectToCorrected(rects.data(), 2, /*clamp*/true);
     ASSERT_EQ(res, OK);
 
     for (size_t i = 0; i < rects.size(); i++) {
@@ -177,17 +176,14 @@ TEST(DistortionMapperTest, ClampConsistency) {
             /*preCorrectionActiveArray*/ activeArray.data());
 
     auto rectsOrig = activeArray;
-    DistortionMapperInfo *mapperInfo = m.getMapperInfo();
-    res = m.mapCorrectedRectToRaw(activeArray.data(), 1, mapperInfo, /*clamp*/true,
-            /*simple*/ true);
+    res = m.mapCorrectedRectToRaw(activeArray.data(), 1, /*clamp*/true, /*simple*/ true);
     ASSERT_EQ(res, OK);
 
     for (size_t i = 0; i < activeArray.size(); i++) {
         EXPECT_EQ(activeArray[i], rectsOrig[i]);
     }
 
-    res = m.mapRawRectToCorrected(activeArray.data(), 1, mapperInfo, /*clamp*/true,
-            /*simple*/ true);
+    res = m.mapRawRectToCorrected(activeArray.data(), 1, /*clamp*/true, /*simple*/ true);
     ASSERT_EQ(res, OK);
 
     for (size_t i = 0; i < activeArray.size(); i++) {
@@ -204,8 +200,7 @@ TEST(DistortionMapperTest, SimpleTransform) {
             /*preCorrectionActiveArray*/ testPreCorrActiveArray);
 
     auto coords = basicCoords;
-    DistortionMapperInfo *mapperInfo = m.getMapperInfo();
-    res = m.mapCorrectedToRaw(coords.data(), 5, mapperInfo, /*clamp*/true, /*simple*/true);
+    res = m.mapCorrectedToRaw(coords.data(), 5,  /*clamp*/true, /*simple*/true);
     ASSERT_EQ(res, OK);
 
     ASSERT_EQ(coords[0], 0); ASSERT_EQ(coords[1], 0);
@@ -242,13 +237,12 @@ void RandomTransformTest(::testing::Test *test,
     auto origCoords = randCoords;
 
     base::Timer correctedToRawTimer;
-    DistortionMapperInfo *mapperInfo = m.getMapperInfo();
-    res = m.mapCorrectedToRaw(randCoords.data(), randCoords.size() / 2, mapperInfo, clamp, simple);
+    res = m.mapCorrectedToRaw(randCoords.data(), randCoords.size() / 2, clamp, simple);
     auto correctedToRawDurationMs = correctedToRawTimer.duration();
     EXPECT_EQ(res, OK);
 
     base::Timer rawToCorrectedTimer;
-    res = m.mapRawToCorrected(randCoords.data(), randCoords.size() / 2, mapperInfo, clamp, simple);
+    res = m.mapRawToCorrected(randCoords.data(), randCoords.size() / 2, clamp, simple);
     auto rawToCorrectedDurationMs = rawToCorrectedTimer.duration();
     EXPECT_EQ(res, OK);
 
@@ -369,8 +363,7 @@ TEST(DistortionMapperTest, CompareToOpenCV) {
 
     using namespace openCvData;
 
-    DistortionMapperInfo *mapperInfo = m.getMapperInfo();
-    res = m.mapRawToCorrected(rawCoords.data(), rawCoords.size() / 2, mapperInfo, /*clamp*/false,
+    res = m.mapRawToCorrected(rawCoords.data(), rawCoords.size() / 2, /*clamp*/false,
             /*simple*/false);
 
     for (size_t i = 0; i < rawCoords.size(); i+=2) {

@@ -19,16 +19,13 @@
 
 #include <cutils/native_handle.h>
 
-#include <UuidUtils.h>
-#include <util/EffectUtils.h>
-
 #include "ConversionHelperHidl.h"
 #include "EffectBufferHalHidl.h"
 #include "EffectHalHidl.h"
 #include "EffectsFactoryHalHidl.h"
+#include "HidlUtils.h"
 
-using ::android::hardware::audio::common::CPP_VERSION::implementation::UuidUtils;
-using ::android::hardware::audio::effect::CPP_VERSION::implementation::EffectUtils;
+using ::android::hardware::audio::common::CPP_VERSION::implementation::HidlUtils;
 using ::android::hardware::Return;
 
 namespace android {
@@ -40,7 +37,7 @@ using namespace ::android::hardware::audio::effect::CPP_VERSION;
 
 EffectsFactoryHalHidl::EffectsFactoryHalHidl(sp<IEffectsFactory> effectsFactory)
         : ConversionHelperHidl("EffectsFactory") {
-    ALOG_ASSERT(effectsFactory != nullptr, "Provided IEffectsFactory service is NULL");
+    ALOG_ASSERT(effectsFactory != nullptr, "Provided IDevicesFactory service is NULL");
     mEffectsFactory = effectsFactory;
 }
 
@@ -79,7 +76,7 @@ status_t EffectsFactoryHalHidl::getDescriptor(
         if (queryResult != OK) return queryResult;
     }
     if (index >= mLastDescriptors.size()) return NAME_NOT_FOUND;
-    EffectUtils::effectDescriptorToHal(mLastDescriptors[index], pDescriptor);
+    EffectHalHidl::effectDescriptorToHal(mLastDescriptors[index], pDescriptor);
     return OK;
 }
 
@@ -88,13 +85,13 @@ status_t EffectsFactoryHalHidl::getDescriptor(
     // TODO: check for nullptr
     if (mEffectsFactory == 0) return NO_INIT;
     Uuid hidlUuid;
-    UuidUtils::uuidFromHal(*pEffectUuid, &hidlUuid);
+    HidlUtils::uuidFromHal(*pEffectUuid, &hidlUuid);
     Result retval = Result::NOT_INITIALIZED;
     Return<void> ret = mEffectsFactory->getDescriptor(hidlUuid,
             [&](Result r, const EffectDescriptor& result) {
                 retval = r;
                 if (retval == Result::OK) {
-                    EffectUtils::effectDescriptorToHal(result, pDescriptor);
+                    EffectHalHidl::effectDescriptorToHal(result, pDescriptor);
                 }
             });
     if (ret.isOk()) {
@@ -110,7 +107,7 @@ status_t EffectsFactoryHalHidl::createEffect(
         int32_t deviceId __unused, sp<EffectHalInterface> *effect) {
     if (mEffectsFactory == 0) return NO_INIT;
     Uuid hidlUuid;
-    UuidUtils::uuidFromHal(*pEffectUuid, &hidlUuid);
+    HidlUtils::uuidFromHal(*pEffectUuid, &hidlUuid);
     Result retval = Result::NOT_INITIALIZED;
     Return<void> ret;
 #if MAJOR_VERSION >= 6
@@ -149,18 +146,6 @@ status_t EffectsFactoryHalHidl::dumpEffects(int fd) {
     hidlHandle->data[0] = fd;
     Return<void> ret = mEffectsFactory->debug(hidlHandle, {} /* options */);
     native_handle_delete(hidlHandle);
-
-    // TODO(b/111997867, b/177271958)  Workaround - remove when fixed.
-    // A Binder transmitted fd may not close immediately due to a race condition b/111997867
-    // when the remote binder thread removes the last refcount to the fd blocks in the
-    // kernel for binder activity. We send a Binder ping() command to unblock the thread
-    // and complete the fd close / release.
-    //
-    // See DeviceHalHidl::dump(), EffectHalHidl::dump(), StreamHalHidl::dump(),
-    //     EffectsFactoryHalHidl::dumpEffects().
-
-    (void)mEffectsFactory->ping(); // synchronous Binder call
-
     return processReturn(__FUNCTION__, ret);
 }
 

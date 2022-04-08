@@ -112,7 +112,6 @@ public:
     MtpObjectPropertyList*  getObjectPropsSupported(MtpObjectFormat format);
 
     MtpProperty*            getDevicePropDesc(MtpDeviceProperty code);
-    bool                    setDevicePropValueStr(MtpProperty* property);
     MtpProperty*            getObjectPropDesc(MtpObjectProperty code, MtpObjectFormat format);
 
     // Reads value of |property| for |handle|. Returns true on success.

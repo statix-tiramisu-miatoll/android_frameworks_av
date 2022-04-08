@@ -35,8 +35,6 @@
 
 namespace android {
 
-using android::content::AttributionSourceState;
-
 enum {
     CREATE = IBinder::FIRST_CALL_TRANSACTION,
     CREATE_MEDIA_RECORDER,
@@ -64,23 +62,21 @@ public:
     }
 
     virtual sp<IMediaPlayer> create(
-            const sp<IMediaPlayerClient>& client, audio_session_t audioSessionId,
-            const AttributionSourceState& attributionSource) {
+            const sp<IMediaPlayerClient>& client, audio_session_t audioSessionId) {
         Parcel data, reply;
         data.writeInterfaceToken(IMediaPlayerService::getInterfaceDescriptor());
         data.writeStrongBinder(IInterface::asBinder(client));
         data.writeInt32(audioSessionId);
-        data.writeParcelable(attributionSource);
 
         remote()->transact(CREATE, data, &reply);
         return interface_cast<IMediaPlayer>(reply.readStrongBinder());
     }
 
-    virtual sp<IMediaRecorder> createMediaRecorder(const AttributionSourceState& attributionSource)
+    virtual sp<IMediaRecorder> createMediaRecorder(const String16 &opPackageName)
     {
         Parcel data, reply;
         data.writeInterfaceToken(IMediaPlayerService::getInterfaceDescriptor());
-        data.writeParcelable(attributionSource);
+        data.writeString16(opPackageName);
         remote()->transact(CREATE_MEDIA_RECORDER, data, &reply);
         return interface_cast<IMediaRecorder>(reply.readStrongBinder());
     }
@@ -131,23 +127,14 @@ status_t BnMediaPlayerService::onTransact(
             sp<IMediaPlayerClient> client =
                 interface_cast<IMediaPlayerClient>(data.readStrongBinder());
             audio_session_t audioSessionId = (audio_session_t) data.readInt32();
-            AttributionSourceState attributionSource;
-            status_t status = data.readParcelable(&attributionSource);
-            if (status != NO_ERROR) {
-                return status;
-            }
-            sp<IMediaPlayer> player = create(client, audioSessionId, attributionSource);
+            sp<IMediaPlayer> player = create(client, audioSessionId);
             reply->writeStrongBinder(IInterface::asBinder(player));
             return NO_ERROR;
         } break;
         case CREATE_MEDIA_RECORDER: {
             CHECK_INTERFACE(IMediaPlayerService, data, reply);
-            AttributionSourceState attributionSource;
-            status_t status = data.readParcelable(&attributionSource);
-            if (status != NO_ERROR) {
-                return status;
-            }
-            sp<IMediaRecorder> recorder = createMediaRecorder(attributionSource);
+            const String16 opPackageName = data.readString16();
+            sp<IMediaRecorder> recorder = createMediaRecorder(opPackageName);
             reply->writeStrongBinder(IInterface::asBinder(recorder));
             return NO_ERROR;
         } break;

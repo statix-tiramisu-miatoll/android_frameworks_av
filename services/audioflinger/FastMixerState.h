@@ -23,7 +23,6 @@
 #include <media/ExtendedAudioBufferProvider.h>
 #include <media/nbaio/NBAIO.h>
 #include <media/nblog/NBLog.h>
-#include <vibrator/ExternalVibrationUtils.h>
 #include "FastThreadState.h"
 
 namespace android {
@@ -50,7 +49,8 @@ struct FastTrack {
     audio_format_t          mFormat;         // track format
     int                     mGeneration;     // increment when any field is assigned
     bool                    mHapticPlaybackEnabled = false; // haptic playback is enabled or not
-    os::HapticScale         mHapticIntensity = os::HapticScale::MUTE; // intensity of haptic data
+    AudioMixer::haptic_intensity_t mHapticIntensity = AudioMixer::HAPTIC_SCALE_MUTE; // intensity of
+                                                                                     // haptic data
 };
 
 // Represents a single state of the fast mixer

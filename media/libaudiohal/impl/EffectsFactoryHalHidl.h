@@ -54,8 +54,6 @@ class EffectsFactoryHalHidl : public EffectsFactoryHalInterface, public Conversi
 
     virtual status_t dumpEffects(int fd);
 
-    virtual float getHalVersion() { return MAJOR_VERSION + (float)MINOR_VERSION / 10; }
-
     status_t allocateBuffer(size_t size, sp<EffectBufferHalInterface>* buffer) override;
     status_t mirrorBuffer(void* external, size_t size,
                           sp<EffectBufferHalInterface>* buffer) override;

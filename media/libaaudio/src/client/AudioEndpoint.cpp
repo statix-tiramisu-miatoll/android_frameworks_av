@@ -137,7 +137,7 @@ aaudio_result_t AudioEndpoint::configure(const EndpointDescriptor *pEndpointDesc
         return AAUDIO_ERROR_INTERNAL;
     }
 
-    mUpCommandQueue = std::make_unique<FifoBufferIndirect>(
+    mUpCommandQueue = std::make_unique<FifoBuffer>(
             descriptor->bytesPerFrame,
             descriptor->capacityInFrames,
             descriptor->readCounterAddress,
@@ -166,11 +166,7 @@ aaudio_result_t AudioEndpoint::configure(const EndpointDescriptor *pEndpointDesc
                                   ? &mDataWriteCounter
                                   : descriptor->writeCounterAddress;
 
-    // Clear buffer to avoid an initial glitch on some devices.
-    size_t bufferSizeBytes = descriptor->capacityInFrames * descriptor->bytesPerFrame;
-    memset(descriptor->dataAddress, 0, bufferSizeBytes);
-
-    mDataQueue = std::make_unique<FifoBufferIndirect>(
+    mDataQueue = std::make_unique<FifoBuffer>(
             descriptor->bytesPerFrame,
             descriptor->capacityInFrames,
             readCounterAddress,

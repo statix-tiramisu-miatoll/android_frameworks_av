@@ -47,16 +47,6 @@
 #include <media/AudioParameter.h>
 #include <system/audio.h>
 
-// TODO : Remove the defines once mainline media is built against NDK >= 31.
-// The mp4 extractor is part of mainline and builds against NDK 29 as of
-// writing. These keys are available only from NDK 31:
-#define AMEDIAFORMAT_KEY_MPEGH_PROFILE_LEVEL_INDICATION \
-  "mpegh-profile-level-indication"
-#define AMEDIAFORMAT_KEY_MPEGH_REFERENCE_CHANNEL_LAYOUT \
-  "mpegh-reference-channel-layout"
-#define AMEDIAFORMAT_KEY_MPEGH_COMPATIBLE_SETS \
-  "mpegh-compatible-sets"
-
 namespace android {
 
 static status_t copyNALUToABuffer(sp<ABuffer> *buffer, const uint8_t *ptr, size_t length) {
@@ -735,19 +725,14 @@ static std::vector<std::pair<const char *, uint32_t>> floatMappings {
     }
 };
 
-static std::vector<std::pair<const char*, uint32_t>> int64Mappings {
+static std::vector<std::pair<const char *, uint32_t>> int64Mappings {
     {
-        { "exif-offset", kKeyExifOffset},
-        { "exif-size", kKeyExifSize},
-        { "xmp-offset", kKeyXmpOffset},
-        { "xmp-size", kKeyXmpSize},
-        { "target-time", kKeyTargetTime},
-        { "thumbnail-time", kKeyThumbnailTime},
-        { "timeUs", kKeyTime},
-        { "durationUs", kKeyDuration},
-        { "sample-file-offset", kKeySampleFileOffset},
-        { "last-sample-index-in-chunk", kKeyLastSampleIndexInChunk},
-        { "sample-time-before-append", kKeySampleTimeBeforeAppend},
+        { "exif-offset", kKeyExifOffset },
+        { "exif-size", kKeyExifSize },
+        { "target-time", kKeyTargetTime },
+        { "thumbnail-time", kKeyThumbnailTime },
+        { "timeUs", kKeyTime },
+        { "durationUs", kKeyDuration },
     }
 };
 
@@ -784,8 +769,6 @@ static std::vector<std::pair<const char *, uint32_t>> bufferMappings {
         { "sei", kKeySEI },
         { "text-format-data", kKeyTextFormatData },
         { "thumbnail-csd-hevc", kKeyThumbnailHVCC },
-        { "slow-motion-markers", kKeySlowMotionMarkers },
-        { "thumbnail-csd-av1c", kKeyThumbnailAV1C },
     }
 };
 
@@ -1095,25 +1078,6 @@ status_t convertMetaDataToMessage(
             msg->setInt32("is-adts", isADTS);
         }
 
-        int32_t mpeghProfileLevelIndication;
-        if (meta->findInt32(kKeyMpeghProfileLevelIndication, &mpeghProfileLevelIndication)) {
-            msg->setInt32(AMEDIAFORMAT_KEY_MPEGH_PROFILE_LEVEL_INDICATION,
-                    mpeghProfileLevelIndication);
-        }
-        int32_t mpeghReferenceChannelLayout;
-        if (meta->findInt32(kKeyMpeghReferenceChannelLayout, &mpeghReferenceChannelLayout)) {
-            msg->setInt32(AMEDIAFORMAT_KEY_MPEGH_REFERENCE_CHANNEL_LAYOUT,
-                    mpeghReferenceChannelLayout);
-        }
-        if (meta->findData(kKeyMpeghCompatibleSets, &type, &data, &size)) {
-            sp<ABuffer> buffer = new (std::nothrow) ABuffer(size);
-            if (buffer.get() == NULL || buffer->base() == NULL) {
-                return NO_MEMORY;
-            }
-            msg->setBuffer(AMEDIAFORMAT_KEY_MPEGH_COMPATIBLE_SETS, buffer);
-            memcpy(buffer->data(), data, size);
-        }
-
         int32_t aacProfile = -1;
         if (meta->findInt32(kKeyAACAOT, &aacProfile)) {
             msg->setInt32("aac-profile", aacProfile);
@@ -1171,7 +1135,7 @@ status_t convertMetaDataToMessage(
         // assertion, let's be lenient for now...
         // CHECK((ptr[4] >> 2) == 0x3f);  // reserved
 
-        // we can get lengthSize value from 1 + (ptr[4] & 3)
+        size_t lengthSize __unused = 1 + (ptr[4] & 3);
 
         // commented out check below as H264_QVGA_500_NO_AUDIO.3gp
         // violates it...
@@ -1699,16 +1663,13 @@ static void convertMessageToMetaDataColorAspects(const sp<AMessage> &msg, sp<Met
         meta->setInt32(kKeyColorMatrix, colorAspects.mMatrixCoeffs);
     }
 }
-/* Converts key and value pairs in AMessage format to MetaData format.
- * Also checks for the presence of required keys.
- */
-status_t convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
+
+void convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
     AString mime;
     if (msg->findString("mime", &mime)) {
         meta->setCString(kKeyMIMEType, mime.c_str());
     } else {
-        ALOGV("did not find mime type");
-        return BAD_VALUE;
+        ALOGW("did not find mime type");
     }
 
     convertMessageToMetaDataFromMappings(msg, meta);
@@ -1736,12 +1697,6 @@ status_t convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
         meta->setInt32(kKeyIsSyncFrame, 1);
     }
 
-    // Mode for media transcoding.
-    int32_t isBackgroundMode;
-    if (msg->findInt32("android._background-mode", &isBackgroundMode) && isBackgroundMode != 0) {
-        meta->setInt32(isBackgroundMode, 1);
-    }
-
     int32_t avgBitrate = 0;
     int32_t maxBitrate;
     if (msg->findInt32("bitrate", &avgBitrate) && avgBitrate > 0) {
@@ -1764,7 +1719,6 @@ status_t convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
             meta->setInt32(kKeyHeight, height);
         } else {
             ALOGV("did not find width and/or height");
-            return BAD_VALUE;
         }
 
         int32_t sarWidth, sarHeight;
@@ -1849,14 +1803,14 @@ status_t convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
             }
         }
     } else if (mime.startsWith("audio/")) {
-        int32_t numChannels, sampleRate;
-        if (!msg->findInt32("channel-count", &numChannels) ||
-                !msg->findInt32("sample-rate", &sampleRate)) {
-            ALOGV("did not find channel-count and/or sample-rate");
-            return BAD_VALUE;
+        int32_t numChannels;
+        if (msg->findInt32("channel-count", &numChannels)) {
+            meta->setInt32(kKeyChannelCount, numChannels);
         }
-        meta->setInt32(kKeyChannelCount, numChannels);
-        meta->setInt32(kKeySampleRate, sampleRate);
+        int32_t sampleRate;
+        if (msg->findInt32("sample-rate", &sampleRate)) {
+            meta->setInt32(kKeySampleRate, sampleRate);
+        }
         int32_t bitsPerSample;
         if (msg->findInt32("bits-per-sample", &bitsPerSample)) {
             meta->setInt32(kKeyBitsPerSample, bitsPerSample);
@@ -1877,23 +1831,6 @@ status_t convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
         int32_t isADTS;
         if (msg->findInt32("is-adts", &isADTS)) {
             meta->setInt32(kKeyIsADTS, isADTS);
-        }
-
-        int32_t mpeghProfileLevelIndication = -1;
-        if (msg->findInt32(AMEDIAFORMAT_KEY_MPEGH_PROFILE_LEVEL_INDICATION,
-                &mpeghProfileLevelIndication)) {
-            meta->setInt32(kKeyMpeghProfileLevelIndication, mpeghProfileLevelIndication);
-        }
-        int32_t mpeghReferenceChannelLayout = -1;
-        if (msg->findInt32(AMEDIAFORMAT_KEY_MPEGH_REFERENCE_CHANNEL_LAYOUT,
-                &mpeghReferenceChannelLayout)) {
-            meta->setInt32(kKeyMpeghReferenceChannelLayout, mpeghReferenceChannelLayout);
-        }
-        sp<ABuffer> mpeghCompatibleSets;
-        if (msg->findBuffer(AMEDIAFORMAT_KEY_MPEGH_COMPATIBLE_SETS,
-                &mpeghCompatibleSets)) {
-            meta->setData(kKeyMpeghCompatibleSets, kTypeHCOS,
-                    mpeghCompatibleSets->data(), mpeghCompatibleSets->size());
         }
 
         int32_t aacProfile = -1;
@@ -1963,8 +1900,7 @@ status_t convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
             std::vector<uint8_t> hvcc(csd0size + 1024);
             size_t outsize = reassembleHVCC(csd0, hvcc.data(), hvcc.size(), 4);
             meta->setData(kKeyHVCC, kTypeHVCC, hvcc.data(), outsize);
-        } else if (mime == MEDIA_MIMETYPE_VIDEO_AV1 ||
-                   mime == MEDIA_MIMETYPE_IMAGE_AVIF) {
+        } else if (mime == MEDIA_MIMETYPE_VIDEO_AV1) {
             meta->setData(kKeyAV1C, 0, csd0->data(), csd0->size());
         } else if (mime == MEDIA_MIMETYPE_VIDEO_DOLBY_VISION) {
             if (msg->findBuffer("csd-2", &csd2)) {
@@ -1989,8 +1925,7 @@ status_t convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
                     }
                 }
             } else {
-                ALOGE("We need csd-2!!. %s", msg->debugString().c_str());
-                return BAD_VALUE;
+                ALOGW("We need csd-2!!. %s", msg->debugString().c_str());
             }
         } else if (mime == MEDIA_MIMETYPE_VIDEO_VP9) {
             meta->setData(kKeyVp9CodecPrivate, 0, csd0->data(), csd0->size());
@@ -2056,7 +1991,6 @@ status_t convertMessageToMetaData(const sp<AMessage> &msg, sp<MetaData> &meta) {
     ALOGI("converted %s to:", msg->debugString(0).c_str());
     meta->dumpToLog();
 #endif
-    return OK;
 }
 
 status_t sendMetaDataToHal(sp<MediaPlayerBase::AudioSink>& sink,
@@ -2202,10 +2136,8 @@ status_t getAudioOffloadInfo(const sp<MetaData>& meta, bool hasVideo,
     }
     info->sample_rate = srate;
 
-    int32_t rawChannelMask;
-    audio_channel_mask_t cmask = meta->findInt32(kKeyChannelMask, &rawChannelMask) ?
-            static_cast<audio_channel_mask_t>(rawChannelMask) : CHANNEL_MASK_USE_CHANNEL_ORDER;
-    if (cmask == CHANNEL_MASK_USE_CHANNEL_ORDER) {
+    int32_t cmask = 0;
+    if (!meta->findInt32(kKeyChannelMask, &cmask) || cmask == CHANNEL_MASK_USE_CHANNEL_ORDER) {
         ALOGV("track of type '%s' does not publish channel mask", mime);
 
         // Try a channel count instead
@@ -2224,7 +2156,7 @@ status_t getAudioOffloadInfo(const sp<MetaData>& meta, bool hasVideo,
     }
     info->duration_us = duration;
 
-    int32_t brate = 0;
+    int32_t brate = -1;
     if (!meta->findInt32(kKeyBitRate, &brate)) {
         ALOGV("track of type '%s' does not publish bitrate", mime);
     }
@@ -2246,11 +2178,7 @@ bool canOffloadStream(const sp<MetaData>& meta, bool hasVideo,
     }
     // Check if offload is possible for given format, stream type, sample rate,
     // bit rate, duration, video and streaming
-#ifdef DISABLE_AUDIO_SYSTEM_OFFLOAD
-    return false;
-#else
-    return AudioSystem::getOffloadSupport(info) != AUDIO_OFFLOAD_NOT_SUPPORTED;
-#endif
+    return AudioSystem::isOffloadSupported(info);
 }
 
 HLSTime::HLSTime(const sp<AMessage>& meta) :

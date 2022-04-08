@@ -19,24 +19,22 @@
 #define LOG_TAG "DeviceHalHidl"
 //#define LOG_NDEBUG 0
 
+#include PATH(android/hardware/audio/FILE_VERSION/IPrimaryDevice.h)
 #include <cutils/native_handle.h>
 #include <hwbinder/IPCThreadState.h>
 #include <media/AudioContainers.h>
 #include <utils/Log.h>
 
-#include PATH(android/hardware/audio/FILE_VERSION/IPrimaryDevice.h)
-#include <HidlUtils.h>
 #include <common/all-versions/VersionUtils.h>
-#include <util/CoreUtils.h>
 
 #include "DeviceHalHidl.h"
 #include "EffectHalHidl.h"
-#include "ParameterUtils.h"
+#include "HidlUtils.h"
 #include "StreamHalHidl.h"
+#include "VersionUtils.h"
 
 using ::android::hardware::audio::common::CPP_VERSION::implementation::HidlUtils;
 using ::android::hardware::audio::common::utils::EnumBitfield;
-using ::android::hardware::audio::CPP_VERSION::implementation::CoreUtils;
 using ::android::hardware::hidl_string;
 using ::android::hardware::hidl_vec;
 
@@ -47,6 +45,47 @@ using namespace ::android::hardware::audio::common::CPP_VERSION;
 using namespace ::android::hardware::audio::CPP_VERSION;
 
 using EffectHalHidl = ::android::effect::CPP_VERSION::EffectHalHidl;
+
+namespace {
+
+status_t deviceAddressFromHal(
+        audio_devices_t device, const char* halAddress, DeviceAddress* address) {
+    address->device = AudioDevice(device);
+
+    if (halAddress == nullptr || strnlen(halAddress, AUDIO_DEVICE_MAX_ADDRESS_LEN) == 0) {
+        return OK;
+    }
+    if (getAudioDeviceOutAllA2dpSet().count(device) > 0
+            || device == AUDIO_DEVICE_IN_BLUETOOTH_A2DP) {
+        int status = sscanf(halAddress,
+                "%hhX:%hhX:%hhX:%hhX:%hhX:%hhX",
+                &address->address.mac[0], &address->address.mac[1], &address->address.mac[2],
+                &address->address.mac[3], &address->address.mac[4], &address->address.mac[5]);
+        return status == 6 ? OK : BAD_VALUE;
+    } else if (device == AUDIO_DEVICE_OUT_IP || device == AUDIO_DEVICE_IN_IP) {
+        int status = sscanf(halAddress,
+                "%hhu.%hhu.%hhu.%hhu",
+                &address->address.ipv4[0], &address->address.ipv4[1],
+                &address->address.ipv4[2], &address->address.ipv4[3]);
+        return status == 4 ? OK : BAD_VALUE;
+    } else if (getAudioDeviceOutAllUsbSet().count(device) > 0
+            || getAudioDeviceInAllUsbSet().count(device) > 0) {
+        int status = sscanf(halAddress,
+                "card=%d;device=%d",
+                &address->address.alsa.card, &address->address.alsa.device);
+        return status == 2 ? OK : BAD_VALUE;
+    } else if (device == AUDIO_DEVICE_OUT_BUS || device == AUDIO_DEVICE_IN_BUS) {
+        address->busAddress = halAddress;
+        return OK;
+    } else if (device == AUDIO_DEVICE_OUT_REMOTE_SUBMIX
+            || device == AUDIO_DEVICE_IN_REMOTE_SUBMIX) {
+        address->rSubmixAddress = halAddress;
+        return OK;
+    }
+    return OK;
+}
+
+}  // namespace
 
 DeviceHalHidl::DeviceHalHidl(const sp<IDevice>& device)
         : ConversionHelperHidl("Device"), mDevice(device),
@@ -173,7 +212,7 @@ status_t DeviceHalHidl::getInputBufferSize(
         const struct audio_config *config, size_t *size) {
     if (mDevice == 0) return NO_INIT;
     AudioConfig hidlConfig;
-    HidlUtils::audioConfigFromHal(*config, true /*isInput*/, &hidlConfig);
+    HidlUtils::audioConfigFromHal(*config, &hidlConfig);
     Result retval;
     Return<void> ret = mDevice->getInputBufferSize(
             hidlConfig,
@@ -195,22 +234,16 @@ status_t DeviceHalHidl::openOutputStream(
         sp<StreamOutHalInterface> *outStream) {
     if (mDevice == 0) return NO_INIT;
     DeviceAddress hidlDevice;
-    if (status_t status = CoreUtils::deviceAddressFromHal(deviceType, address, &hidlDevice);
-            status != OK) {
-        return status;
-    }
+    status_t status = deviceAddressFromHal(deviceType, address, &hidlDevice);
+    if (status != OK) return status;
     AudioConfig hidlConfig;
-    if (status_t status = HidlUtils::audioConfigFromHal(*config, false /*isInput*/, &hidlConfig);
-            status != OK) {
-        return status;
-    }
-    CoreUtils::AudioOutputFlags hidlFlags;
-    if (status_t status = CoreUtils::audioOutputFlagsFromHal(flags, &hidlFlags); status != OK) {
-        return status;
-    }
+    HidlUtils::audioConfigFromHal(*config, &hidlConfig);
     Result retval = Result::NOT_INITIALIZED;
     Return<void> ret = mDevice->openOutputStream(
-            handle, hidlDevice, hidlConfig, hidlFlags,
+            handle,
+            hidlDevice,
+            hidlConfig,
+            EnumBitfield<AudioOutputFlag>(flags),
 #if MAJOR_VERSION >= 4
             {} /* metadata */,
 #endif
@@ -236,54 +269,39 @@ status_t DeviceHalHidl::openInputStream(
         sp<StreamInHalInterface> *inStream) {
     if (mDevice == 0) return NO_INIT;
     DeviceAddress hidlDevice;
-    if (status_t status = CoreUtils::deviceAddressFromHal(devices, address, &hidlDevice);
-            status != OK) {
-        return status;
-    }
+    status_t status = deviceAddressFromHal(devices, address, &hidlDevice);
+    if (status != OK) return status;
     AudioConfig hidlConfig;
-    if (status_t status = HidlUtils::audioConfigFromHal(*config, true /*isInput*/, &hidlConfig);
-            status != OK) {
-        return status;
-    }
-    CoreUtils::AudioInputFlags hidlFlags;
-#if MAJOR_VERSION <= 5
-    // Some flags were specific to framework and must not leak to the HAL.
-    flags = static_cast<audio_input_flags_t>(flags & ~AUDIO_INPUT_FLAG_DIRECT);
-#endif
-    if (status_t status = CoreUtils::audioInputFlagsFromHal(flags, &hidlFlags); status != OK) {
-        return status;
-    }
+    HidlUtils::audioConfigFromHal(*config, &hidlConfig);
     Result retval = Result::NOT_INITIALIZED;
 #if MAJOR_VERSION == 2
     auto sinkMetadata = AudioSource(source);
 #elif MAJOR_VERSION >= 4
     // TODO: correctly propagate the tracks sources and volume
     //       for now, only send the main source at 1dbfs
-    AudioSource hidlSource;
-    if (status_t status = HidlUtils::audioSourceFromHal(source, &hidlSource); status != OK) {
-        return status;
-    }
-    SinkMetadata sinkMetadata = {{{ .source = std::move(hidlSource), .gain = 1 }}};
+    SinkMetadata sinkMetadata = {{{ .source = AudioSource(source), .gain = 1 }}};
 #endif
 #if MAJOR_VERSION < 5
     (void)outputDevice;
     (void)outputDeviceAddress;
 #else
-#if MAJOR_VERSION >= 7
-    (void)HidlUtils::audioChannelMaskFromHal(
-            AUDIO_CHANNEL_NONE, true /*isInput*/, &sinkMetadata.tracks[0].channelMask);
-#endif
     if (outputDevice != AUDIO_DEVICE_NONE) {
         DeviceAddress hidlOutputDevice;
-        if (status_t status = CoreUtils::deviceAddressFromHal(
-                        outputDevice, outputDeviceAddress, &hidlOutputDevice); status != OK) {
-            return status;
-        }
+        status = deviceAddressFromHal(outputDevice, outputDeviceAddress, &hidlOutputDevice);
+        if (status != OK) return status;
         sinkMetadata.tracks[0].destination.device(std::move(hidlOutputDevice));
     }
 #endif
+#if MAJOR_VERSION <= 5
+    // Some flags were specific to framework and must not leak to the HAL.
+    flags = static_cast<audio_input_flags_t>(flags & ~AUDIO_INPUT_FLAG_DIRECT);
+#endif
     Return<void> ret = mDevice->openInputStream(
-            handle, hidlDevice, hidlConfig, hidlFlags, sinkMetadata,
+            handle,
+            hidlDevice,
+            hidlConfig,
+            EnumBitfield<AudioInputFlag>(flags),
+            sinkMetadata,
             [&](Result r, const sp<IStreamIn>& result, const AudioConfig& suggestedConfig) {
                 retval = r;
                 if (retval == Result::OK) {
@@ -354,8 +372,7 @@ status_t DeviceHalHidl::releaseAudioPatch(audio_patch_handle_t patch) {
     return processReturn("releaseAudioPatch", mDevice->releaseAudioPatch(patch));
 }
 
-template <typename HalPort>
-status_t DeviceHalHidl::getAudioPortImpl(HalPort *port) {
+status_t DeviceHalHidl::getAudioPort(struct audio_port *port) {
     if (mDevice == 0) return NO_INIT;
     AudioPort hidlPort;
     HidlUtils::audioPortFromHal(*port, &hidlPort);
@@ -369,30 +386,6 @@ status_t DeviceHalHidl::getAudioPortImpl(HalPort *port) {
                 }
             });
     return processReturn("getAudioPort", ret, retval);
-}
-
-status_t DeviceHalHidl::getAudioPort(struct audio_port *port) {
-    return getAudioPortImpl(port);
-}
-
-status_t DeviceHalHidl::getAudioPort(struct audio_port_v7 *port) {
-#if MAJOR_VERSION >= 7
-    return getAudioPortImpl(port);
-#else
-    struct audio_port audioPort = {};
-    status_t result = NO_ERROR;
-    if (!audio_populate_audio_port(port, &audioPort)) {
-        ALOGE("Failed to populate legacy audio port from audio_port_v7");
-        result = BAD_VALUE;
-    }
-    status_t status = getAudioPort(&audioPort);
-    if (status == NO_ERROR) {
-        audio_populate_audio_port_v7(&audioPort, port);
-    } else {
-        result = status;
-    }
-    return result;
-#endif
 }
 
 status_t DeviceHalHidl::setAudioPortConfig(const struct audio_port_config *config) {
@@ -418,7 +411,7 @@ status_t DeviceHalHidl::getMicrophones(std::vector<media::MicrophoneInfo> *micro
         for (size_t k = 0; k < micArrayHal.size(); k++) {
             audio_microphone_characteristic_t dst;
             //convert
-            (void)CoreUtils::microphoneInfoToHal(micArrayHal[k], &dst);
+            microphoneInfoToHal(micArrayHal[k], &dst);
             media::MicrophoneInfo microphone = media::MicrophoneInfo(dst);
             microphonesInfo->push_back(microphone);
         }
@@ -463,18 +456,6 @@ status_t DeviceHalHidl::dump(int fd) {
     hidlHandle->data[0] = fd;
     Return<void> ret = mDevice->debug(hidlHandle, {} /* options */);
     native_handle_delete(hidlHandle);
-
-    // TODO(b/111997867, b/177271958)  Workaround - remove when fixed.
-    // A Binder transmitted fd may not close immediately due to a race condition b/111997867
-    // when the remote binder thread removes the last refcount to the fd blocks in the
-    // kernel for binder activity. We send a Binder ping() command to unblock the thread
-    // and complete the fd close / release.
-    //
-    // See DeviceHalHidl::dump(), EffectHalHidl::dump(), StreamHalHidl::dump(),
-    //     EffectsFactoryHalHidl::dumpEffects().
-
-    (void)mDevice->ping(); // synchronous Binder call
-
     return processReturn("dump", ret);
 }
 

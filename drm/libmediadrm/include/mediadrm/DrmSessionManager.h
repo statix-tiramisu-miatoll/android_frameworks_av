@@ -62,7 +62,7 @@ struct DrmSessionManager : public RefBase {
     void removeSession(const Vector<uint8_t>& sessionId);
     bool reclaimSession(int callingPid);
 
-    // inspection APIs
+    // sanity check APIs
     size_t getSessionCount() const;
     bool containsSession(const Vector<uint8_t>& sessionId) const;
 

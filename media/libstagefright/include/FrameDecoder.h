@@ -135,8 +135,7 @@ protected:
 private:
     sp<FrameCaptureLayer> mCaptureLayer;
     VideoFrame *mFrame;
-    bool mIsAvc;
-    bool mIsHevc;
+    bool mIsAvcOrHevc;
     MediaSource::ReadOptions::SeekMode mSeekMode;
     int64_t mTargetTimeUs;
     List<int64_t> mSampleDurations;
@@ -146,8 +145,8 @@ private:
     status_t captureSurface();
 };
 
-struct MediaImageDecoder : public FrameDecoder {
-   MediaImageDecoder(
+struct ImageDecoder : public FrameDecoder {
+    ImageDecoder(
             const AString &componentName,
             const sp<MetaData> &trackMeta,
             const sp<IMediaSource> &source);

@@ -17,7 +17,8 @@
 #ifndef FLOWGRAPH_SOURCE_I24_H
 #define FLOWGRAPH_SOURCE_I24_H
 
-#include <stdint.h>
+#include <unistd.h>
+#include <sys/types.h>
 
 #include "AudioProcessorBase.h"
 

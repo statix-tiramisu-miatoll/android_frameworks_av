@@ -19,7 +19,6 @@
 
 #include <audio_utils/clock.h>
 #include <audio_utils/PowerLog.h>
-#include <cutils/bitops.h>
 #include <cutils/properties.h>
 #include <system/audio.h>
 

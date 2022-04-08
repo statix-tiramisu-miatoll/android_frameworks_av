@@ -16,8 +16,6 @@
 
 package android.media;
 
-import android.media.TranscodingSessionStats;
-
 /**
  * Result of the transcoding.
  *
@@ -26,9 +24,9 @@ import android.media.TranscodingSessionStats;
 //TODO(hkuang): Implement the parcelable.
 parcelable TranscodingResultParcel {
     /**
-     * The sessionId associated with the TranscodingResult.
+     * The jobId associated with the TranscodingResult.
      */
-    int sessionId;
+    int jobId;
 
     /**
      * Actual bitrate of the transcoded video in bits per second. This will only present for video
@@ -36,9 +34,5 @@ parcelable TranscodingResultParcel {
      */
     int actualBitrateBps;
 
-    /**
-     * Stats of the transcoding session. This will only be available when client requests to get the
-     * stats in TranscodingRequestParcel.
-     */
-    @nullable TranscodingSessionStats sessionStats;
+    // TODO(hkuang): Add more fields.
 }

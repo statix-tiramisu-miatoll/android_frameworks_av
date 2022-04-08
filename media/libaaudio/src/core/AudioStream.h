@@ -20,17 +20,13 @@
 #include <atomic>
 #include <mutex>
 #include <stdint.h>
-
-#include <android-base/thread_annotations.h>
+#include <aaudio/AAudio.h>
 #include <binder/IServiceManager.h>
 #include <binder/Status.h>
 #include <utils/StrongPointer.h>
 
-#include <aaudio/AAudio.h>
-#include <media/AudioSystem.h>
-#include <media/PlayerBase.h>
-#include <media/VolumeShaper.h>
-
+#include "media/VolumeShaper.h"
+#include "media/PlayerBase.h"
 #include "utility/AAudioUtilities.h"
 #include "utility/MonotonicCounter.h"
 
@@ -49,8 +45,7 @@ constexpr pid_t        CALLBACK_THREAD_NONE = 0;
 /**
  * AAudio audio stream.
  */
-// By extending AudioDeviceCallback, we also inherit from RefBase.
-class AudioStream : public android::AudioSystem::AudioDeviceCallback {
+class AudioStream {
 public:
 
     AudioStream();
@@ -58,6 +53,11 @@ public:
     virtual ~AudioStream();
 
 protected:
+
+    /* Asynchronous requests.
+     * Use waitForStateChange() to wait for completion.
+     */
+    virtual aaudio_result_t requestStart() = 0;
 
     /**
      * Check the state to see if Pause is currently legal.
@@ -77,22 +77,18 @@ protected:
         return false;
     }
 
-    /* Asynchronous requests.
-     * Use waitForStateChange() to wait for completion.
-     */
-    virtual aaudio_result_t requestStart_l() REQUIRES(mStreamLock) = 0;
-
-    virtual aaudio_result_t requestPause_l() REQUIRES(mStreamLock) {
+    virtual aaudio_result_t requestPause()
+    {
         // Only implement this for OUTPUT streams.
         return AAUDIO_ERROR_UNIMPLEMENTED;
     }
 
-    virtual aaudio_result_t requestFlush_l() REQUIRES(mStreamLock) {
+    virtual aaudio_result_t requestFlush() {
         // Only implement this for OUTPUT streams.
         return AAUDIO_ERROR_UNIMPLEMENTED;
     }
 
-    virtual aaudio_result_t requestStop_l() REQUIRES(mStreamLock) = 0;
+    virtual aaudio_result_t requestStop() = 0;
 
 public:
     virtual aaudio_result_t getTimestamp(clockid_t clockId,
@@ -118,37 +114,36 @@ public:
     virtual aaudio_result_t open(const AudioStreamBuilder& builder);
 
     // log to MediaMetrics
-    virtual void logOpenActual();
+    virtual void logOpen();
     void logReleaseBufferState();
 
-    /* Note about naming for "release"  and "close" related methods.
-     *
-     * These names are intended to match the public AAudio API.
-     * The original AAudio API had an AAudioStream_close() function that
-     * released the hardware and deleted the stream. That made it difficult
-     * because apps want to release the HW ASAP but are not in a rush to delete
-     * the stream object. So in R we added an AAudioStream_release() function
-     * that just released the hardware.
-     * The AAudioStream_close() method releases if needed and then closes.
-     */
-
-protected:
     /**
      * Free any hardware or system resources from the open() call.
      * It is safe to call release_l() multiple times.
      */
-    virtual aaudio_result_t release_l() REQUIRES(mStreamLock) {
+    virtual aaudio_result_t release_l() {
         setState(AAUDIO_STREAM_STATE_CLOSING);
         return AAUDIO_OK;
     }
 
-    /**
-     * Free any resources not already freed by release_l().
-     * Assume release_l() already called.
-     */
-    virtual void close_l() REQUIRES(mStreamLock);
+    aaudio_result_t closeFinal() {
+        // State is checked by destructor.
+        setState(AAUDIO_STREAM_STATE_CLOSED);
+        return AAUDIO_OK;
+    }
 
-public:
+    /**
+     * Release then close the stream.
+     * @return AAUDIO_OK or negative error.
+     */
+    aaudio_result_t releaseCloseFinal() {
+        aaudio_result_t result = release_l(); // TODO review locking
+        if (result == AAUDIO_OK) {
+          result = closeFinal();
+        }
+        return result;
+    }
+
     // This is only used to identify a stream in the logs without
     // revealing any pointers.
     aaudio_stream_id_t getId() {
@@ -157,15 +152,11 @@ public:
 
     virtual aaudio_result_t setBufferSize(int32_t requestedFrames) = 0;
 
-    aaudio_result_t createThread(int64_t periodNanoseconds,
-                                 aaudio_audio_thread_proc_t threadProc,
-                                 void *threadArg)
-                                 EXCLUDES(mStreamLock) {
-        std::lock_guard<std::mutex> lock(mStreamLock);
-        return createThread_l(periodNanoseconds, threadProc, threadArg);
-    }
+    virtual aaudio_result_t createThread(int64_t periodNanoseconds,
+                                       aaudio_audio_thread_proc_t threadProc,
+                                       void *threadArg);
 
-    aaudio_result_t joinThread(void **returnArg);
+    aaudio_result_t joinThread(void **returnArg, int64_t timeoutNanoseconds);
 
     virtual aaudio_result_t registerThread() {
         return AAUDIO_OK;
@@ -192,11 +183,11 @@ public:
     }
 
     virtual int32_t getBufferCapacity() const {
-        return mBufferCapacity;
+        return AAUDIO_ERROR_UNIMPLEMENTED;
     }
 
     virtual int32_t getFramesPerBurst() const {
-        return mFramesPerBurst;
+        return AAUDIO_ERROR_UNIMPLEMENTED;
     }
 
     virtual int32_t getXRunCount() const {
@@ -337,10 +328,6 @@ public:
      */
     bool collidesWithCallback() const;
 
-    // Implement AudioDeviceCallback
-    void onAudioDeviceUpdate(audio_io_handle_t audioIo,
-            audio_port_handle_t deviceId) override {};
-
     // ============== I/O ===========================
     // A Stream will only implement read() or write() depending on its direction.
     virtual aaudio_result_t write(const void *buffer __unused,
@@ -379,7 +366,7 @@ public:
      */
     void registerPlayerBase() {
         if (getDirection() == AAUDIO_DIRECTION_OUTPUT) {
-            mPlayerBase->registerWithAudioManager(this);
+            mPlayerBase->registerWithAudioManager();
         }
     }
 
@@ -406,37 +393,23 @@ public:
     /**
      * This is called internally when an app callback returns AAUDIO_CALLBACK_RESULT_STOP.
      */
-    aaudio_result_t systemStopInternal();
+    aaudio_result_t systemStopFromCallback();
 
-    /**
-     * Safely RELEASE a stream after taking mStreamLock and checking
-     * to make sure we are not being called from a callback.
-     * @return AAUDIO_OK or a negative error
-     */
     aaudio_result_t safeRelease();
-
-    /**
-     * Safely RELEASE and CLOSE a stream after taking mStreamLock and checking
-     * to make sure we are not being called from a callback.
-     * @return AAUDIO_OK or a negative error
-     */
-    aaudio_result_t safeReleaseClose();
-
-    aaudio_result_t safeReleaseCloseInternal();
 
 protected:
 
     // PlayerBase allows the system to control the stream volume.
     class MyPlayerBase : public android::PlayerBase {
     public:
-        MyPlayerBase() {};
+        explicit MyPlayerBase(AudioStream *parent);
 
-        virtual ~MyPlayerBase() = default;
+        virtual ~MyPlayerBase();
 
         /**
          * Register for volume changes and remote control.
          */
-        void registerWithAudioManager(const android::sp<AudioStream>& parent);
+        void registerWithAudioManager();
 
         /**
          * UnRegister.
@@ -447,6 +420,8 @@ protected:
          * Just calls unregisterWithAudioManager().
          */
         void destroy() override;
+
+        void clearParentReference() { mParent = nullptr; }
 
         // Just a stub. The ability to start audio through PlayerBase is being deprecated.
         android::status_t playerStart() override {
@@ -463,27 +438,28 @@ protected:
             return android::NO_ERROR;
         }
 
-        android::status_t playerSetVolume() override;
+        android::status_t playerSetVolume() override {
+            // No pan and only left volume is taken into account from IPLayer interface
+            mParent->setDuckAndMuteVolume(mVolumeMultiplierL  /* * mPanMultiplierL */);
+            return android::NO_ERROR;
+        }
 
 #if AAUDIO_USE_VOLUME_SHAPER
-        ::android::binder::Status applyVolumeShaper();
+        ::android::binder::Status applyVolumeShaper(
+                const ::android::media::VolumeShaper::Configuration& configuration,
+                const ::android::media::VolumeShaper::Operation& operation) {
+            return mParent->applyVolumeShaper(configuration, operation);
+        }
 #endif
 
         aaudio_result_t getResult() {
             return mResult;
         }
 
-        // Returns the playerIId if registered, -1 otherwise.
-        int32_t getPlayerIId() const {
-            return mPIId;
-        }
-
     private:
-        // Use a weak pointer so the AudioStream can be deleted.
-        std::mutex               mParentLock;
-        android::wp<AudioStream> mParent GUARDED_BY(mParentLock);
-        aaudio_result_t          mResult = AAUDIO_OK;
-        bool                     mRegistered = false;
+        AudioStream          *mParent;
+        aaudio_result_t       mResult = AAUDIO_OK;
+        bool                  mRegistered = false;
     };
 
     /**
@@ -494,32 +470,30 @@ protected:
         mSampleRate = sampleRate;
     }
 
-    // This should not be called after the open() call.
+    /**
+     * This should not be called after the open() call.
+     */
     void setSamplesPerFrame(int32_t samplesPerFrame) {
         mSamplesPerFrame = samplesPerFrame;
     }
 
-    // This should not be called after the open() call.
-    void setFramesPerBurst(int32_t framesPerBurst) {
-        mFramesPerBurst = framesPerBurst;
-    }
-
-    // This should not be called after the open() call.
-    void setBufferCapacity(int32_t bufferCapacity) {
-        mBufferCapacity = bufferCapacity;
-    }
-
-    // This should not be called after the open() call.
+    /**
+     * This should not be called after the open() call.
+     */
     void setSharingMode(aaudio_sharing_mode_t sharingMode) {
         mSharingMode = sharingMode;
     }
 
-    // This should not be called after the open() call.
+    /**
+     * This should not be called after the open() call.
+     */
     void setFormat(audio_format_t format) {
         mFormat = format;
     }
 
-    // This should not be called after the open() call.
+    /**
+     * This should not be called after the open() call.
+     */
     void setDeviceFormat(audio_format_t format) {
         mDeviceFormat = format;
     }
@@ -534,17 +508,9 @@ protected:
         mDeviceId = deviceId;
     }
 
-    // This should not be called after the open() call.
     void setSessionId(int32_t sessionId) {
         mSessionId = sessionId;
     }
-
-    aaudio_result_t createThread_l(int64_t periodNanoseconds,
-                                           aaudio_audio_thread_proc_t threadProc,
-                                           void *threadArg)
-                                           REQUIRES(mStreamLock);
-
-    aaudio_result_t joinThread_l(void **returnArg) REQUIRES(mStreamLock);
 
     std::atomic<bool>    mCallbackEnabled{false};
 
@@ -612,22 +578,11 @@ protected:
 
     std::string mMetricsId; // set once during open()
 
-    std::mutex                 mStreamLock;
-
 private:
 
-    aaudio_result_t safeStop_l() REQUIRES(mStreamLock);
+    aaudio_result_t safeStop();
 
-    /**
-     * Release then close the stream.
-     */
-    void releaseCloseFinal_l() REQUIRES(mStreamLock) {
-        if (getState() != AAUDIO_STREAM_STATE_CLOSING) { // not already released?
-            // Ignore result and keep closing.
-            (void) release_l();
-        }
-        close_l();
-    }
+    std::mutex                 mStreamLock;
 
     const android::sp<MyPlayerBase>   mPlayerBase;
 
@@ -640,8 +595,6 @@ private:
     audio_format_t              mFormat = AUDIO_FORMAT_DEFAULT;
     aaudio_stream_state_t       mState = AAUDIO_STREAM_STATE_UNINITIALIZED;
     aaudio_performance_mode_t   mPerformanceMode = AAUDIO_PERFORMANCE_MODE_NONE;
-    int32_t                     mFramesPerBurst = 0;
-    int32_t                     mBufferCapacity = 0;
 
     aaudio_usage_t              mUsage           = AAUDIO_UNSPECIFIED;
     aaudio_content_type_t       mContentType     = AAUDIO_UNSPECIFIED;
@@ -667,9 +620,8 @@ private:
     std::atomic<pid_t>          mErrorCallbackThread{CALLBACK_THREAD_NONE};
 
     // background thread ----------------------------------
-    // Use mHasThread to prevent joining twice, which has undefined behavior.
-    bool                        mHasThread GUARDED_BY(mStreamLock) = false;
-    pthread_t                   mThread  GUARDED_BY(mStreamLock) = {};
+    bool                        mHasThread = false;
+    pthread_t                   mThread; // initialized in constructor
 
     // These are set by the application thread and then read by the audio pthread.
     std::atomic<int64_t>        mPeriodNanoseconds; // for tuning SCHED_FIFO threads

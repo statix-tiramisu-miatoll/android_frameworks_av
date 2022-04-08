@@ -47,10 +47,6 @@ public:
     bool                       isDeferred() const;
     bool                       isShared() const;
     String16                   getPhysicalCameraId() const;
-    bool                       isMultiResolution() const;
-
-    // set of sensor pixel mode resolutions allowed {MAX_RESOLUTION, DEFAULT_MODE};
-    const std::vector<int32_t>&            getSensorPixelModesUsed() const;
     /**
      * Keep impl up-to-date with OutputConfiguration.java in frameworks/base
      */
@@ -87,9 +83,7 @@ public:
                 mIsDeferred == other.mIsDeferred &&
                 mIsShared == other.mIsShared &&
                 gbpsEqual(other) &&
-                mPhysicalCameraId == other.mPhysicalCameraId &&
-                mIsMultiResolution == other.mIsMultiResolution &&
-                sensorPixelModesUsedEqual(other));
+                mPhysicalCameraId == other.mPhysicalCameraId );
     }
     bool operator != (const OutputConfiguration& other) const {
         return !(*this == other);
@@ -120,22 +114,13 @@ public:
         if (mPhysicalCameraId != other.mPhysicalCameraId) {
             return mPhysicalCameraId < other.mPhysicalCameraId;
         }
-        if (mIsMultiResolution != other.mIsMultiResolution) {
-            return mIsMultiResolution < other.mIsMultiResolution;
-        }
-        if (!sensorPixelModesUsedEqual(other)) {
-            return sensorPixelModesUsedLessThan(other);
-        }
         return gbpsLessThan(other);
     }
-
     bool operator > (const OutputConfiguration& other) const {
         return (*this != other && !(*this < other));
     }
 
     bool gbpsEqual(const OutputConfiguration& other) const;
-    bool sensorPixelModesUsedEqual(const OutputConfiguration& other) const;
-    bool sensorPixelModesUsedLessThan(const OutputConfiguration& other) const;
     bool gbpsLessThan(const OutputConfiguration& other) const;
     void addGraphicProducer(sp<IGraphicBufferProducer> gbp) {mGbps.push_back(gbp);}
 private:
@@ -148,8 +133,6 @@ private:
     bool                       mIsDeferred;
     bool                       mIsShared;
     String16                   mPhysicalCameraId;
-    bool                       mIsMultiResolution;
-    std::vector<int32_t>       mSensorPixelModesUsed;
 };
 } // namespace params
 } // namespace camera2

@@ -18,6 +18,7 @@
 /**********************************************************************************
    INCLUDE FILES
 ***********************************************************************************/
+
 #include "LVC_Mixer_Private.h"
 #include "LVM_Macros.h"
 #include "ScalarArithmetic.h"
@@ -25,62 +26,86 @@
 /**********************************************************************************
    FUNCTION LVCore_MIXSOFT_1ST_D16C31_WRA
 ***********************************************************************************/
-void LVC_Core_MixSoft_1St_D16C31_WRA(LVMixer3_FLOAT_st* ptrInstance, const LVM_FLOAT* src,
-                                     LVM_FLOAT* dst, LVM_INT16 n) {
-    LVM_INT16 OutLoop;
-    LVM_INT16 InLoop;
-    LVM_INT32 ii;
-    Mix_Private_FLOAT_st* pInstance = (Mix_Private_FLOAT_st*)(ptrInstance->PrivateParams);
-    LVM_FLOAT Delta = (LVM_FLOAT)pInstance->Delta;
-    LVM_FLOAT Current = (LVM_FLOAT)pInstance->Current;
-    LVM_FLOAT Target = (LVM_FLOAT)pInstance->Target;
+void LVC_Core_MixSoft_1St_D16C31_WRA(LVMixer3_FLOAT_st *ptrInstance,
+                                     const LVM_FLOAT   *src,
+                                           LVM_FLOAT   *dst,
+                                           LVM_INT16   n)
+{
+    LVM_INT16   OutLoop;
+    LVM_INT16   InLoop;
+    LVM_INT32   ii;
+    Mix_Private_FLOAT_st  *pInstance=(Mix_Private_FLOAT_st *)(ptrInstance->PrivateParams);
+    LVM_FLOAT   Delta= (LVM_FLOAT)pInstance->Delta;
+    LVM_FLOAT   Current = (LVM_FLOAT)pInstance->Current;
+    LVM_FLOAT   Target= (LVM_FLOAT)pInstance->Target;
+    LVM_FLOAT   Temp;
 
     InLoop = (LVM_INT16)(n >> 2); /* Process per 4 samples */
     OutLoop = (LVM_INT16)(n - (InLoop << 2));
 
-    if (Current < Target) {
-        if (OutLoop) {
-            Current = LVM_Clamp(Current + Delta);
-            if (Current > Target) Current = Target;
+    if(Current<Target){
+        if (OutLoop){
 
-            for (ii = OutLoop; ii != 0; ii--) {
-                *(dst++) = (((LVM_FLOAT) * (src++) * (LVM_FLOAT)Current));
+            Temp = Current + Delta;
+            if (Temp > 1.0f)
+                Temp = 1.0f;
+            else if (Temp < -1.0f)
+                Temp = -1.0f;
+
+            Current=Temp;
+            if (Current > Target)
+                Current = Target;
+
+            for (ii = OutLoop; ii != 0; ii--){
+                *(dst++) = (((LVM_FLOAT)*(src++) * (LVM_FLOAT)Current));
             }
         }
 
-        for (ii = InLoop; ii != 0; ii--) {
-            Current = LVM_Clamp(Current + Delta);
+        for (ii = InLoop; ii != 0; ii--){
 
-            if (Current > Target) Current = Target;
+            Temp = Current + Delta;
 
-            *(dst++) = (((LVM_FLOAT) * (src++) * Current));
-            *(dst++) = (((LVM_FLOAT) * (src++) * Current));
-            *(dst++) = (((LVM_FLOAT) * (src++) * Current));
-            *(dst++) = (((LVM_FLOAT) * (src++) * Current));
-        }
-    } else {
-        if (OutLoop) {
-            Current -= Delta;
-            if (Current < Target) Current = Target;
+            if (Temp > 1.0f)
+                Temp = 1.0f;
+            else if (Temp < -1.0f)
+                Temp = -1.0f;
 
-            for (ii = OutLoop; ii != 0; ii--) {
-                *(dst++) = (((LVM_FLOAT) * (src++) * Current));
-            }
-        }
+            Current=Temp;
+            if (Current > Target)
+                Current = Target;
 
-        for (ii = InLoop; ii != 0; ii--) {
-            Current -= Delta;
-            if (Current < Target) Current = Target;
-
-            *(dst++) = (((LVM_FLOAT) * (src++) * Current));
-            *(dst++) = (((LVM_FLOAT) * (src++) * Current));
-            *(dst++) = (((LVM_FLOAT) * (src++) * Current));
-            *(dst++) = (((LVM_FLOAT) * (src++) * Current));
+            *(dst++) = (((LVM_FLOAT)*(src++) * Current) );
+            *(dst++) = (((LVM_FLOAT)*(src++) * Current) );
+            *(dst++) = (((LVM_FLOAT)*(src++) * Current) );
+            *(dst++) = (((LVM_FLOAT)*(src++) * Current) );
         }
     }
-    pInstance->Current = Current;
+    else{
+        if (OutLoop){
+            Current -= Delta;
+            if (Current < Target)
+                Current = Target;
+
+            for (ii = OutLoop; ii != 0; ii--){
+                *(dst++) = (((LVM_FLOAT)*(src++) * Current));
+            }
+        }
+
+        for (ii = InLoop; ii != 0; ii--){
+            Current -= Delta;
+            if (Current < Target)
+                Current = Target;
+
+            *(dst++) = (((LVM_FLOAT)*(src++) * Current));
+            *(dst++) = (((LVM_FLOAT)*(src++) * Current));
+            *(dst++) = (((LVM_FLOAT)*(src++) * Current));
+            *(dst++) = (((LVM_FLOAT)*(src++) * Current));
+        }
+    }
+    pInstance->Current=Current;
 }
 
+#ifdef SUPPORT_MC
 /*
  * FUNCTION:       LVC_Core_MixSoft_Mc_D16C31_WRA
  *
@@ -98,15 +123,20 @@ void LVC_Core_MixSoft_1St_D16C31_WRA(LVMixer3_FLOAT_st* ptrInstance, const LVM_F
  *  void
  *
  */
-void LVC_Core_MixSoft_Mc_D16C31_WRA(LVMixer3_FLOAT_st* ptrInstance, const LVM_FLOAT* src,
-                                    LVM_FLOAT* dst, LVM_INT16 NrFrames, LVM_INT16 NrChannels) {
-    LVM_INT16 OutLoop;
-    LVM_INT16 InLoop;
-    LVM_INT32 ii, jj;
-    Mix_Private_FLOAT_st* pInstance = (Mix_Private_FLOAT_st*)(ptrInstance->PrivateParams);
-    LVM_FLOAT Delta = (LVM_FLOAT)pInstance->Delta;
-    LVM_FLOAT Current = (LVM_FLOAT)pInstance->Current;
-    LVM_FLOAT Target = (LVM_FLOAT)pInstance->Target;
+void LVC_Core_MixSoft_Mc_D16C31_WRA(LVMixer3_FLOAT_st *ptrInstance,
+                                    const LVM_FLOAT   *src,
+                                          LVM_FLOAT   *dst,
+                                          LVM_INT16   NrFrames,
+                                          LVM_INT16   NrChannels)
+{
+    LVM_INT16   OutLoop;
+    LVM_INT16   InLoop;
+    LVM_INT32   ii, jj;
+    Mix_Private_FLOAT_st  *pInstance=(Mix_Private_FLOAT_st *)(ptrInstance->PrivateParams);
+    LVM_FLOAT   Delta= (LVM_FLOAT)pInstance->Delta;
+    LVM_FLOAT   Current = (LVM_FLOAT)pInstance->Current;
+    LVM_FLOAT   Target= (LVM_FLOAT)pInstance->Target;
+    LVM_FLOAT   Temp;
 
     /*
      * Same operation is performed on consecutive frames.
@@ -117,50 +147,73 @@ void LVC_Core_MixSoft_Mc_D16C31_WRA(LVMixer3_FLOAT_st* ptrInstance, const LVM_FL
     /* OutLoop is calculated to handle cases where NrFrames value can be odd.*/
     OutLoop = (LVM_INT16)(NrFrames - (InLoop << 1));
 
-    if (Current < Target) {
+    if (Current<Target) {
         if (OutLoop) {
-            Current = LVM_Clamp(Current + Delta);
-            if (Current > Target) Current = Target;
+
+            Temp = Current + Delta;
+            if (Temp > 1.0f)
+                Temp = 1.0f;
+            else if (Temp < -1.0f)
+                Temp = -1.0f;
+
+            Current=Temp;
+            if (Current > Target)
+                Current = Target;
 
             for (ii = OutLoop; ii != 0; ii--) {
-                for (jj = NrChannels; jj != 0; jj--) {
-                    *(dst++) = (((LVM_FLOAT) * (src++) * (LVM_FLOAT)Current));
+                for (jj = NrChannels; jj !=0; jj--) {
+                    *(dst++) = (((LVM_FLOAT)*(src++) * (LVM_FLOAT)Current));
                 }
             }
         }
 
         for (ii = InLoop; ii != 0; ii--) {
-            Current = LVM_Clamp(Current + Delta);
-            if (Current > Target) Current = Target;
 
-            for (jj = NrChannels; jj != 0; jj--) {
-                *(dst++) = (((LVM_FLOAT) * (src++) * Current));
-                *(dst++) = (((LVM_FLOAT) * (src++) * Current));
-            }
-        }
-    } else {
-        if (OutLoop) {
-            Current -= Delta;
-            if (Current < Target) Current = Target;
+            Temp = Current + Delta;
 
-            for (ii = OutLoop; ii != 0; ii--) {
-                for (jj = NrChannels; jj != 0; jj--) {
-                    *(dst++) = (((LVM_FLOAT) * (src++) * (LVM_FLOAT)Current));
-                }
-            }
-        }
+            if (Temp > 1.0f)
+                Temp = 1.0f;
+            else if (Temp < -1.0f)
+                Temp = -1.0f;
 
-        for (ii = InLoop; ii != 0; ii--) {
-            Current -= Delta;
-            if (Current < Target) Current = Target;
+            Current=Temp;
+            if (Current > Target)
+                Current = Target;
 
-            for (jj = NrChannels; jj != 0; jj--) {
-                *(dst++) = (((LVM_FLOAT) * (src++) * Current));
-                *(dst++) = (((LVM_FLOAT) * (src++) * Current));
+            for (jj = NrChannels; jj != 0 ; jj--)
+            {
+                *(dst++) = (((LVM_FLOAT)*(src++) * Current));
+                *(dst++) = (((LVM_FLOAT)*(src++) * Current));
             }
         }
     }
-    pInstance->Current = Current;
+    else{
+        if (OutLoop) {
+            Current -= Delta;
+            if (Current < Target)
+                Current = Target;
+
+            for (ii = OutLoop; ii != 0; ii--) {
+                for (jj = NrChannels; jj !=0; jj--) {
+                    *(dst++) = (((LVM_FLOAT)*(src++) * (LVM_FLOAT)Current));
+                }
+            }
+        }
+
+        for (ii = InLoop; ii != 0; ii--) {
+            Current -= Delta;
+            if (Current < Target)
+                Current = Target;
+
+            for (jj = NrChannels; jj != 0 ; jj--)
+            {
+                *(dst++) = (((LVM_FLOAT)*(src++) * Current));
+                *(dst++) = (((LVM_FLOAT)*(src++) * Current));
+            }
+        }
+    }
+    pInstance->Current=Current;
 }
+#endif
 
 /**********************************************************************************/

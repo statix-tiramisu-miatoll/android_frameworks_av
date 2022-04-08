@@ -31,15 +31,12 @@
 namespace android {
 namespace camera2 {
 
-using android::camera3::CAMERA_STREAM_ROTATION_0;
-
 CallbackProcessor::CallbackProcessor(sp<Camera2Client> client):
         Thread(false),
         mClient(client),
         mDevice(client->getCameraDevice()),
         mId(client->getCameraId()),
         mCallbackAvailable(false),
-        mCallbackPaused(true),
         mCallbackToApp(false),
         mCallbackStreamId(NO_STREAM) {
 }
@@ -157,8 +154,8 @@ status_t CallbackProcessor::updateStream(const Parameters &params) {
                 callbackFormat, params.previewFormat);
         res = device->createStream(mCallbackWindow,
                 params.previewWidth, params.previewHeight, callbackFormat,
-                HAL_DATASPACE_V0_JFIF, CAMERA_STREAM_ROTATION_0, &mCallbackStreamId,
-                String8(), std::unordered_set<int32_t>{ANDROID_SENSOR_PIXEL_MODE_DEFAULT});
+                HAL_DATASPACE_V0_JFIF, CAMERA3_STREAM_ROTATION_0, &mCallbackStreamId,
+                String8());
         if (res != OK) {
             ALOGE("%s: Camera %d: Can't create output stream for callbacks: "
                     "%s (%d)", __FUNCTION__, mId,
@@ -217,14 +214,6 @@ int CallbackProcessor::getStreamId() const {
     return mCallbackStreamId;
 }
 
-void CallbackProcessor::unpauseCallback() {
-    mCallbackPaused = false;
-}
-
-void CallbackProcessor::pauseCallback() {
-    mCallbackPaused = true;
-}
-
 void CallbackProcessor::dump(int /*fd*/, const Vector<String16>& /*args*/) const {
 }
 
@@ -243,7 +232,7 @@ bool CallbackProcessor::threadLoop() {
 
     do {
         sp<Camera2Client> client = mClient.promote();
-        if (client == 0 || mCallbackPaused) {
+        if (client == 0) {
             res = discardNewCallback();
         } else {
             res = processNewCallback(client);

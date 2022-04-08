@@ -23,7 +23,8 @@
 #include <SimpleC2Component.h>
 
 #include "ihevc_typedefs.h"
-#include "ihevcd_cxa.h"
+#include "iv.h"
+#include "ivd.h"
 
 namespace android {
 

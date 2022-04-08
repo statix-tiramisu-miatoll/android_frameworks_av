@@ -70,8 +70,6 @@ private:
     OpusMSDecoder *mDecoder;
     OpusHeader *mHeader;
 
-    int32_t mNumChannels;
-    int32_t mSamplingRate;
     int64_t mCodecDelay;
     int64_t mSeekPreRoll;
     int64_t mSamplesToDiscard;

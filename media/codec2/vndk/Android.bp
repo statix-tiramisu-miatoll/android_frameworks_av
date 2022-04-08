@@ -1,12 +1,3 @@
-package {
-    // See: http://go/android-license-faq
-    // A large-scale-change added 'default_applicable_licenses' to import
-    // all of the 'license_kinds' from "frameworks_av_license"
-    // to get the below license kinds:
-    //   SPDX-license-identifier-Apache-2.0
-    default_applicable_licenses: ["frameworks_av_license"],
-}
-
 cc_library_headers {
     name: "libcodec2_internal",
 
@@ -20,7 +11,7 @@ cc_library_headers {
     min_sdk_version: "29",
 }
 
-// !!!DO NOT DEPEND ON THIS SHARED LIBRARY DIRECTLY!!!
+// !!!DO NOT DEPEND ON THIS LIBRARY DIRECTLY!!!
 // use libcodec2-impl-defaults instead
 cc_library {
     name: "libcodec2_vndk",
@@ -35,12 +26,9 @@ cc_library {
         "C2AllocatorGralloc.cpp",
         "C2Buffer.cpp",
         "C2Config.cpp",
-        "C2DmaBufAllocator.cpp",
-        "C2Fence.cpp",
         "C2PlatformStorePluginLoader.cpp",
         "C2Store.cpp",
         "platform/C2BqBuffer.cpp",
-        "platform/C2SurfaceSyncObj.cpp",
         "types.cpp",
         "util/C2Debug.cpp",
         "util/C2InterfaceHelper.cpp",
@@ -76,7 +64,6 @@ cc_library {
         "libhardware",
         "libhidlbase",
         "libion",
-        "libdmabufheap",
         "libfmq",
         "liblog",
         "libnativewindow",
@@ -123,3 +110,4 @@ cc_defaults {
 
     // TODO: separate internal headers so they can be exposed here
 }
+

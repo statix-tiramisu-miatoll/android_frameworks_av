@@ -28,7 +28,6 @@
 #include <media/stagefright/foundation/hexdump.h>
 #include <media/stagefright/MediaErrors.h>
 #include <mediadrm/CryptoHal.h>
-#include <mediadrm/DrmUtils.h>
 
 using drm::V1_0::BufferType;
 using drm::V1_0::DestinationBuffer;
@@ -40,7 +39,6 @@ using drm::V1_0::SharedBuffer;
 using drm::V1_0::Status;
 using drm::V1_0::SubSample;
 
-using ::android::DrmUtils::toStatusT;
 using ::android::hardware::hidl_array;
 using ::android::hardware::hidl_handle;
 using ::android::hardware::hidl_memory;
@@ -54,6 +52,42 @@ using ::android::sp;
 typedef drm::V1_2::Status Status_V1_2;
 
 namespace android {
+
+static status_t toStatusT(Status status) {
+    switch (status) {
+    case Status::OK:
+        return OK;
+    case Status::ERROR_DRM_NO_LICENSE:
+        return ERROR_DRM_NO_LICENSE;
+    case Status::ERROR_DRM_LICENSE_EXPIRED:
+        return ERROR_DRM_LICENSE_EXPIRED;
+    case Status::ERROR_DRM_RESOURCE_BUSY:
+        return ERROR_DRM_RESOURCE_BUSY;
+    case Status::ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION:
+        return ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION;
+    case Status::ERROR_DRM_SESSION_NOT_OPENED:
+        return ERROR_DRM_SESSION_NOT_OPENED;
+    case Status::ERROR_DRM_CANNOT_HANDLE:
+        return ERROR_DRM_CANNOT_HANDLE;
+    case Status::ERROR_DRM_DECRYPT:
+        return ERROR_DRM_DECRYPT;
+    default:
+        return UNKNOWN_ERROR;
+    }
+}
+
+static status_t toStatusT_1_2(Status_V1_2 status) {
+    switch (status) {
+    case Status_V1_2::ERROR_DRM_SESSION_LOST_STATE:
+        return ERROR_DRM_SESSION_LOST_STATE;;
+    case Status_V1_2::ERROR_DRM_FRAME_TOO_LARGE:
+        return ERROR_DRM_FRAME_TOO_LARGE;
+    case Status_V1_2::ERROR_DRM_INSUFFICIENT_SECURITY:
+        return ERROR_DRM_INSUFFICIENT_SECURITY;
+    default:
+        return toStatusT(static_cast<Status>(status));
+    }
+}
 
 static hidl_vec<uint8_t> toHidlVec(const Vector<uint8_t> &vector) {
     hidl_vec<uint8_t> vec;
@@ -146,9 +180,6 @@ sp<ICryptoPlugin> CryptoHal::makeCryptoPlugin(const sp<ICryptoFactory>& factory,
                 plugin = hPlugin;
             }
         );
-    if (!hResult.isOk()) {
-        mInitCheck = DEAD_OBJECT;
-    }
     return plugin;
 }
 
@@ -182,8 +213,10 @@ status_t CryptoHal::createPlugin(const uint8_t uuid[16], const void *data,
         }
     }
 
-    if (mInitCheck == NO_INIT) {
-        mInitCheck = mPlugin == NULL ? ERROR_UNSUPPORTED : OK;
+    if (mPlugin == NULL) {
+        mInitCheck = ERROR_UNSUPPORTED;
+    } else {
+        mInitCheck = OK;
     }
 
     return mInitCheck;
@@ -343,7 +376,6 @@ ssize_t CryptoHal::decrypt(const uint8_t keyId[16], const uint8_t iv[16],
 
     Return<void> hResult;
 
-    mLock.unlock();
     if (mPluginV1_2 != NULL) {
         hResult = mPluginV1_2->decrypt_1_2(secure, toHidlArray16(keyId), toHidlArray16(iv),
                 hMode, hPattern, hSubSamples, hSource, offset, hDestination,
@@ -352,7 +384,7 @@ ssize_t CryptoHal::decrypt(const uint8_t keyId[16], const uint8_t iv[16],
                         bytesWritten = hBytesWritten;
                         *errorDetailMsg = toString8(hDetailedError);
                     }
-                    err = toStatusT(status);
+                    err = toStatusT_1_2(status);
                 }
             );
     } else {
@@ -382,8 +414,7 @@ void CryptoHal::notifyResolution(uint32_t width, uint32_t height) {
         return;
     }
 
-    auto hResult = mPlugin->notifyResolution(width, height);
-    ALOGE_IF(!hResult.isOk(), "notifyResolution txn failed %s", hResult.description().c_str());
+    mPlugin->notifyResolution(width, height);
 }
 
 status_t CryptoHal::setMediaDrmSession(const Vector<uint8_t> &sessionId) {
@@ -393,12 +424,7 @@ status_t CryptoHal::setMediaDrmSession(const Vector<uint8_t> &sessionId) {
         return mInitCheck;
     }
 
-    auto err = mPlugin->setMediaDrmSession(toHidlVec(sessionId));
-    return err.isOk() ? toStatusT(err) : DEAD_OBJECT;
+    return toStatusT(mPlugin->setMediaDrmSession(toHidlVec(sessionId)));
 }
 
-status_t CryptoHal::getLogMessages(Vector<drm::V1_4::LogMessage> &logs) const {
-    Mutex::Autolock autoLock(mLock);
-    return DrmUtils::GetLogMessages<drm::V1_4::ICryptoPlugin>(mPlugin, logs);
-}
 }  // namespace android

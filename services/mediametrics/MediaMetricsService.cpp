@@ -19,26 +19,19 @@
 #include <utils/Log.h>
 
 #include "MediaMetricsService.h"
-#include "iface_statsd.h"
 
 #include <pwd.h> //getpwuid
 
-#include <android-base/stringprintf.h>
 #include <android/content/pm/IPackageManagerNative.h>  // package info
 #include <audio_utils/clock.h>                 // clock conversions
 #include <binder/IPCThreadState.h>             // get calling uid
-#include <binder/IServiceManager.h>            // checkCallingPermission
 #include <cutils/properties.h>                 // for property_get
 #include <mediautils/MemoryLeakTrackUtil.h>
 #include <memunreachable/memunreachable.h>
 #include <private/android_filesystem_config.h> // UID
-#include <statslog.h>
-
-#include <set>
 
 namespace android {
 
-using base::StringPrintf;
 using mediametrics::Item;
 using mediametrics::startsWith;
 
@@ -114,7 +107,7 @@ MediaMetricsService::~MediaMetricsService()
 {
     ALOGD("%s", __func__);
     // the class destructor clears anyhow, but we enforce clearing items first.
-    mItemsDiscarded += (int64_t)mItems.size();
+    mItemsDiscarded += mItems.size();
     mItems.clear();
 }
 
@@ -206,19 +199,22 @@ status_t MediaMetricsService::submitInternal(mediametrics::Item *item, bool rele
 
     (void)mAudioAnalytics.submit(sitem, isTrusted);
 
-    (void)dump2Statsd(sitem, mStatsdLog);  // failure should be logged in function.
+    extern bool dump2Statsd(const std::shared_ptr<const mediametrics::Item>& item);
+    (void)dump2Statsd(sitem);  // failure should be logged in function.
     saveItem(sitem);
     return NO_ERROR;
 }
 
 status_t MediaMetricsService::dump(int fd, const Vector<String16>& args)
 {
+    String8 result;
+
     if (checkCallingPermission(String16("android.permission.DUMP")) == false) {
-        const std::string result = StringPrintf("Permission Denial: "
+        result.appendFormat("Permission Denial: "
                 "can't dump MediaMetricsService from pid=%d, uid=%d\n",
                 IPCThreadState::self()->getCallingPid(),
                 IPCThreadState::self()->getCallingUid());
-        write(fd, result.c_str(), result.size());
+        write(fd, result.string(), result.size());
         return NO_ERROR;
     }
 
@@ -250,18 +246,17 @@ status_t MediaMetricsService::dump(int fd, const Vector<String16>& args)
             // dumpsys media.metrics audiotrack,codec
             // or dumpsys media.metrics audiotrack codec
 
-            static constexpr char result[] =
-                    "Recognized parameters:\n"
-                    "--all         show all records\n"
-                    "--clear       clear out saved records\n"
-                    "--heap        show heap usage (top 100)\n"
-                    "--help        display help\n"
-                    "--prefix X    process records for component X\n"
-                    "--since X     X < 0: records from -X seconds in the past\n"
-                    "              X = 0: ignore\n"
-                    "              X > 0: records from X seconds since Unix epoch\n"
-                    "--unreachable show unreachable memory (leaks)\n";
-            write(fd, result, std::size(result));
+            result.append("Recognized parameters:\n");
+            result.append("--all         show all records\n");
+            result.append("--clear       clear out saved records\n");
+            result.append("--heap        show heap usage (top 100)\n");
+            result.append("--help        display help\n");
+            result.append("--prefix X    process records for component X\n");
+            result.append("--since X     X < 0: records from -X seconds in the past\n");
+            result.append("              X = 0: ignore\n");
+            result.append("              X > 0: records from X seconds since Unix epoch\n");
+            result.append("--unreachable show unreachable memory (leaks)\n");
+            write(fd, result.string(), result.size());
             return NO_ERROR;
         } else if (args[i] == prefixOption) {
             ++i;
@@ -287,36 +282,30 @@ status_t MediaMetricsService::dump(int fd, const Vector<String16>& args)
             unreachable = true;
         }
     }
-    std::stringstream result;
+
     {
         std::lock_guard _l(mLock);
 
         if (clear) {
-            mItemsDiscarded += (int64_t)mItems.size();
+            mItemsDiscarded += mItems.size();
             mItems.clear();
             mAudioAnalytics.clear();
         } else {
-            result << StringPrintf("Dump of the %s process:\n", kServiceName);
+            result.appendFormat("Dump of the %s process:\n", kServiceName);
             const char *prefixptr = prefix.size() > 0 ? prefix.c_str() : nullptr;
-            result << dumpHeaders(sinceNs, prefixptr);
-            result << dumpQueue(sinceNs, prefixptr);
+            dumpHeaders(result, sinceNs, prefixptr);
+            dumpQueue(result, sinceNs, prefixptr);
 
             // TODO: maybe consider a better way of dumping audio analytics info.
             const int32_t linesToDump = all ? INT32_MAX : 1000;
             auto [ dumpString, lines ] = mAudioAnalytics.dump(linesToDump, sinceNs, prefixptr);
-            result << dumpString;
+            result.append(dumpString.c_str());
             if (lines == linesToDump) {
-                result << "-- some lines may be truncated --\n";
+                result.append("-- some lines may be truncated --\n");
             }
-
-            // Dump the statsd atoms we sent out.
-            result << "Statsd atoms:\n"
-                   << mStatsdLog->dumpToString("  " /* prefix */,
-                           all ? STATSD_LOG_LINES_MAX : STATSD_LOG_LINES_DUMP);
         }
     }
-    const std::string str = result.str();
-    write(fd, str.c_str(), str.size());
+    write(fd, result.string(), result.size());
 
     // Check heap and unreachable memory outside of lock.
     if (heap) {
@@ -334,37 +323,38 @@ status_t MediaMetricsService::dump(int fd, const Vector<String16>& args)
 }
 
 // dump headers
-std::string MediaMetricsService::dumpHeaders(int64_t sinceNs, const char* prefix)
+void MediaMetricsService::dumpHeaders(String8 &result, int64_t sinceNs, const char* prefix)
 {
-    std::stringstream result;
     if (mediametrics::Item::isEnabled()) {
-        result << "Metrics gathering: enabled\n";
+        result.append("Metrics gathering: enabled\n");
     } else {
-        result << "Metrics gathering: DISABLED via property\n";
+        result.append("Metrics gathering: DISABLED via property\n");
     }
-    result << StringPrintf(
+    result.appendFormat(
             "Since Boot: Submissions: %lld Accepted: %lld\n",
             (long long)mItemsSubmitted.load(), (long long)mItemsFinalized);
-    result << StringPrintf(
+    result.appendFormat(
             "Records Discarded: %lld (by Count: %lld by Expiration: %lld)\n",
             (long long)mItemsDiscarded, (long long)mItemsDiscardedCount,
             (long long)mItemsDiscardedExpire);
     if (prefix != nullptr) {
-        result << "Restricting to prefix " << prefix << "\n";
+        result.appendFormat("Restricting to prefix %s", prefix);
     }
     if (sinceNs != 0) {
-        result << "Emitting Queue entries more recent than: " << sinceNs << "\n";
+        result.appendFormat(
+            "Emitting Queue entries more recent than: %lld\n",
+            (long long)sinceNs);
     }
-    return result.str();
 }
 
 // TODO: should prefix be a set<string>?
-std::string MediaMetricsService::dumpQueue(int64_t sinceNs, const char* prefix)
+void MediaMetricsService::dumpQueue(String8 &result, int64_t sinceNs, const char* prefix)
 {
     if (mItems.empty()) {
-        return "empty\n";
+        result.append("empty\n");
+        return;
     }
-    std::stringstream result;
+
     int slot = 0;
     for (const auto &item : mItems) {         // TODO: consider std::lower_bound() on mItems
         if (item->getTimestamp() < sinceNs) { // sinceNs == 0 means all items shown
@@ -375,10 +365,9 @@ std::string MediaMetricsService::dumpQueue(int64_t sinceNs, const char* prefix)
                     __func__, item->getKey().c_str(), prefix);
             continue;
         }
-        result << StringPrintf("%5d: %s\n", slot, item->toString().c_str());
+        result.appendFormat("%5d: %s\n", slot, item->toString().c_str());
         slot++;
     }
-    return result.str();
 }
 
 //
@@ -427,10 +416,10 @@ bool MediaMetricsService::expirations(const std::shared_ptr<const mediametrics::
 
     if (const size_t toErase = overlimit + expired;
             toErase > 0) {
-        mItemsDiscardedCount += (int64_t)overlimit;
-        mItemsDiscardedExpire += (int64_t)expired;
-        mItemsDiscarded += (int64_t)toErase;
-        mItems.erase(mItems.begin(), mItems.begin() + (ptrdiff_t)toErase); // erase from front
+        mItemsDiscardedCount += overlimit;
+        mItemsDiscardedExpire += expired;
+        mItemsDiscarded += toErase;
+        mItems.erase(mItems.begin(), mItems.begin() + toErase); // erase from front
     }
     return more;
 }
@@ -450,10 +439,6 @@ void MediaMetricsService::saveItem(const std::shared_ptr<const mediametrics::Ite
     std::lock_guard _l(mLock);
     // we assume the items are roughly in time order.
     mItems.emplace_back(item);
-    if (isPullable(item->getKey())) {
-        registerStatsdCallbacksIfNeeded();
-        mPullableItems[item->getKey()].emplace_back(item);
-    }
     ++mItemsFinalized;
     if (expirations(item)
             && (!mExpireFuture.valid()
@@ -500,58 +485,4 @@ bool MediaMetricsService::isRateLimited(mediametrics::Item *) const
     return false;
 }
 
-void MediaMetricsService::registerStatsdCallbacksIfNeeded()
-{
-    if (mStatsdRegistered.test_and_set()) {
-        return;
-    }
-    auto tag = android::util::MEDIA_DRM_ACTIVITY_INFO;
-    auto cb = MediaMetricsService::pullAtomCallback;
-    AStatsManager_setPullAtomCallback(tag, /* metadata */ nullptr, cb, this);
-}
-
-/* static */
-bool MediaMetricsService::isPullable(const std::string &key)
-{
-    static const std::set<std::string> pullableKeys{
-        "mediadrm",
-    };
-    return pullableKeys.count(key);
-}
-
-/* static */
-std::string MediaMetricsService::atomTagToKey(int32_t atomTag)
-{
-    switch (atomTag) {
-    case android::util::MEDIA_DRM_ACTIVITY_INFO:
-        return "mediadrm";
-    }
-    return {};
-}
-
-/* static */
-AStatsManager_PullAtomCallbackReturn MediaMetricsService::pullAtomCallback(
-        int32_t atomTag, AStatsEventList* data, void* cookie)
-{
-    MediaMetricsService* svc = reinterpret_cast<MediaMetricsService*>(cookie);
-    return svc->pullItems(atomTag, data);
-}
-
-AStatsManager_PullAtomCallbackReturn MediaMetricsService::pullItems(
-        int32_t atomTag, AStatsEventList* data)
-{
-    const std::string key(atomTagToKey(atomTag));
-    if (key.empty()) {
-        return AStatsManager_PULL_SKIP;
-    }
-    std::lock_guard _l(mLock);
-    bool dumped = false;
-    for (auto &item : mPullableItems[key]) {
-        if (const auto sitem = item.lock()) {
-            dumped |= dump2Statsd(sitem, data, mStatsdLog);
-        }
-    }
-    mPullableItems[key].clear();
-    return dumped ? AStatsManager_PULL_SUCCESS : AStatsManager_PULL_SKIP;
-}
 } // namespace android

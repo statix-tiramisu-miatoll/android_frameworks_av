@@ -57,7 +57,7 @@
 #include <media/stagefright/foundation/ABuffer.h>
 #include <media/stagefright/foundation/AMessage.h>
 #include <mediadrm/ICrypto.h>
-#include <ui/DisplayMode.h>
+#include <ui/DisplayConfig.h>
 #include <ui/DisplayState.h>
 
 #include "screenrecord.h"
@@ -68,7 +68,7 @@ using android::ABuffer;
 using android::ALooper;
 using android::AMessage;
 using android::AString;
-using android::ui::DisplayMode;
+using android::DisplayConfig;
 using android::FrameOutput;
 using android::IBinder;
 using android::IGraphicBufferProducer;
@@ -273,11 +273,14 @@ static status_t setDisplayProjection(
         SurfaceComposerClient::Transaction& t,
         const sp<IBinder>& dpy,
         const ui::DisplayState& displayState) {
-    // Set the region of the layer stack we're interested in, which in our case is "all of it".
-    Rect layerStackRect(displayState.layerStackSpaceRect);
+    const ui::Size& viewport = displayState.viewport;
+
+    // Set the region of the layer stack we're interested in, which in our
+    // case is "all of it".
+    Rect layerStackRect(viewport);
 
     // We need to preserve the aspect ratio of the display.
-    float displayAspect = layerStackRect.getHeight() / static_cast<float>(layerStackRect.getWidth());
+    float displayAspect = viewport.getHeight() / static_cast<float>(viewport.getWidth());
 
 
     // Set the way we map the output onto the display surface (which will
@@ -689,28 +692,27 @@ static status_t recordScreen(const char* fileName) {
         return err;
     }
 
-    DisplayMode displayMode;
-    err = SurfaceComposerClient::getActiveDisplayMode(display, &displayMode);
+    DisplayConfig displayConfig;
+    err = SurfaceComposerClient::getActiveDisplayConfig(display, &displayConfig);
     if (err != NO_ERROR) {
         fprintf(stderr, "ERROR: unable to get display config\n");
         return err;
     }
 
-    const ui::Size& layerStackSpaceRect = displayState.layerStackSpaceRect;
+    const ui::Size& viewport = displayState.viewport;
     if (gVerbose) {
         printf("Display is %dx%d @%.2ffps (orientation=%s), layerStack=%u\n",
-                layerStackSpaceRect.getWidth(), layerStackSpaceRect.getHeight(),
-                displayMode.refreshRate, toCString(displayState.orientation),
-                displayState.layerStack);
+                viewport.getWidth(), viewport.getHeight(), displayConfig.refreshRate,
+                toCString(displayState.orientation), displayState.layerStack);
         fflush(stdout);
     }
 
     // Encoder can't take odd number as config
     if (gVideoWidth == 0) {
-        gVideoWidth = floorToEven(layerStackSpaceRect.getWidth());
+        gVideoWidth = floorToEven(viewport.getWidth());
     }
     if (gVideoHeight == 0) {
-        gVideoHeight = floorToEven(layerStackSpaceRect.getHeight());
+        gVideoHeight = floorToEven(viewport.getHeight());
     }
 
     // Configure and start the encoder.
@@ -718,7 +720,7 @@ static status_t recordScreen(const char* fileName) {
     sp<FrameOutput> frameOutput;
     sp<IGraphicBufferProducer> encoderInputSurface;
     if (gOutputFormat != FORMAT_FRAMES && gOutputFormat != FORMAT_RAW_FRAMES) {
-        err = prepareEncoder(displayMode.refreshRate, &encoder, &encoderInputSurface);
+        err = prepareEncoder(displayConfig.refreshRate, &encoder, &encoderInputSurface);
 
         if (err != NO_ERROR && !gSizeSpecified) {
             // fallback is defined for landscape; swap if we're in portrait
@@ -731,7 +733,7 @@ static status_t recordScreen(const char* fileName) {
                         gVideoWidth, gVideoHeight, newWidth, newHeight);
                 gVideoWidth = newWidth;
                 gVideoHeight = newHeight;
-                err = prepareEncoder(displayMode.refreshRate, &encoder, &encoderInputSurface);
+                err = prepareEncoder(displayConfig.refreshRate, &encoder, &encoderInputSurface);
             }
         }
         if (err != NO_ERROR) return err;
@@ -1168,14 +1170,14 @@ int main(int argc, char* const argv[]) {
             }
             break;
         case 'd':
-            gPhysicalDisplayId = PhysicalDisplayId(atoll(optarg));
-            if (gPhysicalDisplayId.value == 0) {
+            gPhysicalDisplayId = atoll(optarg);
+            if (gPhysicalDisplayId == 0) {
                 fprintf(stderr, "Please specify a valid physical display id\n");
                 return 2;
             } else if (SurfaceComposerClient::
                     getPhysicalDisplayToken(gPhysicalDisplayId) == nullptr) {
-                fprintf(stderr, "Invalid physical display id: %s\n",
-                        to_string(gPhysicalDisplayId).c_str());
+                fprintf(stderr, "Invalid physical display id: %"
+                        ANDROID_PHYSICAL_DISPLAY_ID_FORMAT "\n", gPhysicalDisplayId);
                 return 2;
             }
             break;

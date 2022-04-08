@@ -20,8 +20,6 @@ import android.hardware.ICamera;
 import android.hardware.ICameraClient;
 import android.hardware.camera2.ICameraDeviceUser;
 import android.hardware.camera2.ICameraDeviceCallbacks;
-import android.hardware.camera2.ICameraInjectionCallback;
-import android.hardware.camera2.ICameraInjectionSession;
 import android.hardware.camera2.params.VendorTagDescriptor;
 import android.hardware.camera2.params.VendorTagDescriptorCache;
 import android.hardware.camera2.utils.ConcurrentCameraIdCombination;
@@ -71,7 +69,7 @@ interface ICameraService
 
     /**
      * Default UID/PID values for non-privileged callers of
-     * connect() and connectDevice()
+     * connect(), connectDevice(), and connectLegacy()
      */
     const int USE_CALLING_UID = -1;
     const int USE_CALLING_PID = -1;
@@ -82,8 +80,7 @@ interface ICameraService
     ICamera connect(ICameraClient client,
             int cameraId,
             String opPackageName,
-            int clientUid, int clientPid,
-            int targetSdkVersion);
+            int clientUid, int clientPid);
 
     /**
      * Open a camera device through the new camera API
@@ -93,8 +90,21 @@ interface ICameraService
             String cameraId,
             String opPackageName,
             @nullable String featureId,
-            int clientUid, int oomScoreOffset,
-            int targetSdkVersion);
+            int clientUid);
+
+    /**
+     * halVersion constant for connectLegacy
+     */
+    const int CAMERA_HAL_API_VERSION_UNSPECIFIED = -1;
+
+    /**
+     * Open a camera device in legacy mode, if supported by the camera module HAL.
+     */
+    ICamera connectLegacy(ICameraClient client,
+            int cameraId,
+            int halVersion,
+            String opPackageName,
+            int clientUid);
 
     /**
      * Add listener for changes to camera device and flashlight state.
@@ -116,15 +126,13 @@ interface ICameraService
       * corresponding camera ids.
       *
       * @param sessions the set of camera id and session configuration pairs to be queried.
-      * @param targetSdkVersion the target sdk level of the application calling this function.
       * @return true  - the set of concurrent camera id and stream combinations is supported.
       *         false - the set of concurrent camera id and stream combinations is not supported
       *                 OR the method was called with a set of camera ids not returned by
       *                 getConcurrentCameraIds().
       */
     boolean isConcurrentSessionConfigurationSupported(
-            in CameraIdAndSessionConfiguration[] sessions,
-            int targetSdkVersion);
+            in CameraIdAndSessionConfiguration[] sessions);
 
     /**
      * Remove listener for changes to camera device and flashlight state.
@@ -135,7 +143,7 @@ interface ICameraService
      * Read the static camera metadata for a camera device.
      * Only supported for device HAL versions >= 3.2
      */
-    CameraMetadataNative getCameraCharacteristics(String cameraId, int targetSdkVersion);
+    CameraMetadataNative getCameraCharacteristics(String cameraId);
 
     /**
      * Read in the vendor tag descriptors from the camera module HAL.
@@ -167,9 +175,6 @@ interface ICameraService
     boolean supportsCameraApi(String cameraId, int apiVersion);
     // Determines if a cameraId is a hidden physical camera of a logical multi-camera.
     boolean isHiddenPhysicalCamera(String cameraId);
-    // Inject the external camera to replace the internal camera session.
-    ICameraInjectionSession injectCamera(String packageName, String internalCamId,
-            String externalCamId, in ICameraInjectionCallback CameraInjectionCallback);
 
     void setTorchMode(String cameraId, boolean enabled, IBinder clientBinder);
 
@@ -181,13 +186,6 @@ interface ICameraService
     const int EVENT_NONE = 0;
     const int EVENT_USER_SWITCHED = 1; // The argument is the set of new foreground user IDs.
     oneway void notifySystemEvent(int eventId, in int[] args);
-
-    /**
-     * Notify the camera service of a display configuration change.
-     *
-     * Callers require the android.permission.CAMERA_SEND_SYSTEM_EVENTS permission.
-     */
-    oneway void notifyDisplayConfigurationChange();
 
     /**
      * Notify the camera service of a device physical status change. May only be called from

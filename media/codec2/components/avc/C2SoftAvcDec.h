@@ -25,7 +25,8 @@
 #include <SimpleC2Component.h>
 
 #include "ih264_typedefs.h"
-#include "ih264d.h"
+#include "iv.h"
+#include "ivd.h"
 
 namespace android {
 

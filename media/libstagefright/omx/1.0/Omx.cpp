@@ -22,7 +22,7 @@
 #include <media/openmax/OMX_AsString.h>
 
 #include <media/stagefright/omx/OMXUtils.h>
-#include <media/stagefright/omx/OMXStore.h>
+#include <media/stagefright/omx/OMXMaster.h>
 #include <media/stagefright/omx/OmxGraphicBufferSource.h>
 
 #include <media/stagefright/omx/1.0/WOmxNode.h>
@@ -41,21 +41,21 @@ namespace implementation {
 constexpr size_t kMaxNodeInstances = (1 << 16);
 
 Omx::Omx() :
-    mStore(new OMXStore()),
+    mMaster(new OMXMaster()),
     mParser() {
     (void)mParser.parseXmlFilesInSearchDirs();
     (void)mParser.parseXmlPath(mParser.defaultProfilingResultsXmlPath);
 }
 
 Omx::~Omx() {
-    delete mStore;
+    delete mMaster;
 }
 
 Return<void> Omx::listNodes(listNodes_cb _hidl_cb) {
     std::list<::android::IOMX::ComponentInfo> list;
     char componentName[256];
     for (OMX_U32 index = 0;
-            mStore->enumerateComponents(
+            mMaster->enumerateComponents(
             componentName, sizeof(componentName), index) == OMX_ErrorNone;
             ++index) {
         list.push_back(::android::IOMX::ComponentInfo());
@@ -63,7 +63,7 @@ Return<void> Omx::listNodes(listNodes_cb _hidl_cb) {
         info.mName = componentName;
         ::android::Vector<::android::String8> roles;
         OMX_ERRORTYPE err =
-                mStore->getRolesOfComponent(componentName, &roles);
+                mMaster->getRolesOfComponent(componentName, &roles);
         if (err == OMX_ErrorNone) {
             for (OMX_U32 i = 0; i < roles.size(); ++i) {
                 info.mRoles.push_back(roles[i]);
@@ -101,7 +101,7 @@ Return<void> Omx::allocateNode(
                 this, new LWOmxObserver(observer), name.c_str());
 
         OMX_COMPONENTTYPE *handle;
-        OMX_ERRORTYPE err = mStore->makeComponentInstance(
+        OMX_ERRORTYPE err = mMaster->makeComponentInstance(
                 name.c_str(), &OMXNodeInstance::kCallbacks,
                 instance.get(), &handle);
 
@@ -208,7 +208,7 @@ status_t Omx::freeNode(sp<OMXNodeInstance> const& instance) {
 
     OMX_ERRORTYPE err = OMX_ErrorNone;
     if (instance->handle() != NULL) {
-        err = mStore->destroyComponentInstance(
+        err = mMaster->destroyComponentInstance(
                 static_cast<OMX_COMPONENTTYPE*>(instance->handle()));
     }
     return StatusFromOMXError(err);

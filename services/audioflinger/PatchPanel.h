@@ -52,12 +52,11 @@ public:
                                     struct audio_port *ports);
 
     /* Get supported attributes for a given audio port */
-    status_t getAudioPort(struct audio_port_v7 *port);
+    status_t getAudioPort(struct audio_port *port);
 
     /* Create a patch between several source and sink ports */
     status_t createAudioPatch(const struct audio_patch *patch,
-                              audio_patch_handle_t *handle,
-                              bool endpointPatch = false);
+                                       audio_patch_handle_t *handle);
 
     /* Release a patch */
     status_t releaseAudioPatch(audio_patch_handle_t handle);
@@ -72,8 +71,7 @@ public:
             std::vector<SoftwarePatch> *patches) const;
 
     // Notifies patch panel about all opened and closed streams.
-    void notifyStreamOpened(AudioHwDevice *audioHwDevice, audio_io_handle_t stream,
-                            struct audio_patch *patch);
+    void notifyStreamOpened(AudioHwDevice *audioHwDevice, audio_io_handle_t stream);
     void notifyStreamClosed(audio_io_handle_t stream);
 
     void dump(int fd) const;
@@ -162,8 +160,7 @@ public:
 
     class Patch final {
     public:
-        Patch(const struct audio_patch &patch, bool endpointPatch) :
-            mAudioPatch(patch), mIsEndpointPatch(endpointPatch) {}
+        explicit Patch(const struct audio_patch &patch) : mAudioPatch(patch) {}
         Patch() = default;
         ~Patch();
         Patch(const Patch& other) noexcept {
@@ -172,7 +169,6 @@ public:
             mPlayback = other.mPlayback;
             mRecord = other.mRecord;
             mThread = other.mThread;
-            mIsEndpointPatch = other.mIsEndpointPatch;
         }
         Patch(Patch&& other) noexcept { swap(other); }
         Patch& operator=(Patch&& other) noexcept {
@@ -187,7 +183,6 @@ public:
             swap(mPlayback, other.mPlayback);
             swap(mRecord, other.mRecord);
             swap(mThread, other.mThread);
-            swap(mIsEndpointPatch, other.mIsEndpointPatch);
         }
 
         friend void swap(Patch &a, Patch &b) noexcept {
@@ -222,7 +217,6 @@ public:
         Endpoint<RecordThread, RecordThread::PatchRecord> mRecord;
 
         wp<ThreadBase> mThread;
-        bool mIsEndpointPatch;
     };
 
     // Call with AudioFlinger mLock held
@@ -232,8 +226,7 @@ private:
     AudioHwDevice* findAudioHwDeviceByModule(audio_module_handle_t module);
     sp<DeviceHalInterface> findHwDeviceByModule(audio_module_handle_t module);
     void addSoftwarePatchToInsertedModules(
-            audio_module_handle_t module, audio_patch_handle_t handle,
-            const struct audio_patch *patch);
+            audio_module_handle_t module, audio_patch_handle_t handle);
     void removeSoftwarePatchFromInsertedModules(audio_patch_handle_t handle);
     void erasePatch(audio_patch_handle_t handle);
 

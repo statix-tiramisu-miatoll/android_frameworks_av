@@ -136,8 +136,7 @@ TEST_P(C2DecoderTest, Codec2Decode) {
                 mDecoder->deInitCodec();
                 int64_t durationUs = extractor->getClipDuration();
                 ALOGV("codec : %s", codecName.c_str());
-                mDecoder->dumpStatistics(GetParam().first, durationUs, codecName,
-                                         gEnv->getStatsFile());
+                mDecoder->dumpStatistics(GetParam().first, durationUs);
                 mDecoder->resetDecoder();
             }
         }
@@ -179,9 +178,6 @@ int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     int status = gEnv->initFromOptions(argc, argv);
     if (status == 0) {
-        gEnv->setStatsFile("C2Decoder.csv");
-        status = gEnv->writeStatsHeader();
-        ALOGV("Stats file = %d\n", status);
         status = RUN_ALL_TESTS();
         ALOGV("C2 Decoder Test result = %d\n", status);
     }

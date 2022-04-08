@@ -33,7 +33,7 @@
 
 #include <media/stagefright/foundation/hexdump.h>
 
-#if !defined(__ANDROID_VNDK__) && !defined(__ANDROID_APEX__)
+#ifndef __ANDROID_VNDK__
 #include <binder/Parcel.h>
 #endif
 
@@ -54,11 +54,13 @@ status_t AReplyToken::setReply(const sp<AMessage> &reply) {
 
 AMessage::AMessage(void)
     : mWhat(0),
-      mTarget(0) {
+      mTarget(0),
+      mNumItems(0) {
 }
 
 AMessage::AMessage(uint32_t what, const sp<const AHandler> &handler)
-    : mWhat(what) {
+    : mWhat(what),
+      mNumItems(0) {
     setTarget(handler);
 }
 
@@ -87,13 +89,13 @@ void AMessage::setTarget(const sp<const AHandler> &handler) {
 }
 
 void AMessage::clear() {
-    // Item needs to be handled delicately
-    for (Item &item : mItems) {
-        delete[] item.mName;
-        item.mName = NULL;
-        freeItemValue(&item);
+    for (size_t i = 0; i < mNumItems; ++i) {
+        Item *item = &mItems[i];
+        delete[] item->mName;
+        item->mName = NULL;
+        freeItemValue(item);
     }
-    mItems.clear();
+    mNumItems = 0;
 }
 
 void AMessage::freeItemValue(Item *item) {
@@ -155,7 +157,7 @@ inline size_t AMessage::findItemIndex(const char *name, size_t len) const {
     size_t memchecks = 0;
 #endif
     size_t i = 0;
-    for (; i < mItems.size(); i++) {
+    for (; i < mNumItems; i++) {
         if (len != mItems[i].mNameLength) {
             continue;
         }
@@ -170,7 +172,7 @@ inline size_t AMessage::findItemIndex(const char *name, size_t len) const {
     {
         Mutex::Autolock _l(gLock);
         ++gFindItemCalls;
-        gAverageNumItems += mItems.size();
+        gAverageNumItems += mNumItems;
         gAverageNumMemChecks += memchecks;
         gAverageNumChecks += i;
         reportStats();
@@ -186,26 +188,20 @@ void AMessage::Item::setName(const char *name, size_t len) {
     memcpy((void*)mName, name, len + 1);
 }
 
-AMessage::Item::Item(const char *name, size_t len)
-    : mType(kTypeInt32) {
-    // mName and mNameLength are initialized by setName
-    setName(name, len);
-}
-
 AMessage::Item *AMessage::allocateItem(const char *name) {
     size_t len = strlen(name);
     size_t i = findItemIndex(name, len);
     Item *item;
 
-    if (i < mItems.size()) {
+    if (i < mNumItems) {
         item = &mItems[i];
         freeItemValue(item);
     } else {
-        CHECK(mItems.size() < kMaxNumItems);
-        i = mItems.size();
-        // place a 'blank' item at the end - this is of type kTypeInt32
-        mItems.emplace_back(name, len);
+        CHECK(mNumItems < kMaxNumItems);
+        i = mNumItems++;
         item = &mItems[i];
+        item->mType = kTypeInt32;
+        item->setName(name, len);
     }
 
     return item;
@@ -214,7 +210,7 @@ AMessage::Item *AMessage::allocateItem(const char *name) {
 const AMessage::Item *AMessage::findItem(
         const char *name, Type type) const {
     size_t i = findItemIndex(name, strlen(name));
-    if (i < mItems.size()) {
+    if (i < mNumItems) {
         const Item *item = &mItems[i];
         return item->mType == type ? item : NULL;
 
@@ -224,7 +220,7 @@ const AMessage::Item *AMessage::findItem(
 
 bool AMessage::findAsFloat(const char *name, float *value) const {
     size_t i = findItemIndex(name, strlen(name));
-    if (i < mItems.size()) {
+    if (i < mNumItems) {
         const Item *item = &mItems[i];
         switch (item->mType) {
             case kTypeFloat:
@@ -251,7 +247,7 @@ bool AMessage::findAsFloat(const char *name, float *value) const {
 
 bool AMessage::findAsInt64(const char *name, int64_t *value) const {
     size_t i = findItemIndex(name, strlen(name));
-    if (i < mItems.size()) {
+    if (i < mNumItems) {
         const Item *item = &mItems[i];
         switch (item->mType) {
             case kTypeInt64:
@@ -269,16 +265,15 @@ bool AMessage::findAsInt64(const char *name, int64_t *value) const {
 
 bool AMessage::contains(const char *name) const {
     size_t i = findItemIndex(name, strlen(name));
-    return i < mItems.size();
+    return i < mNumItems;
 }
 
 #define BASIC_TYPE(NAME,FIELDNAME,TYPENAME)                             \
 void AMessage::set##NAME(const char *name, TYPENAME value) {            \
     Item *item = allocateItem(name);                                    \
-    if (item) {                                                         \
-        item->mType = kType##NAME;                                      \
-        item->u.FIELDNAME = value;                                      \
-    }                                                                   \
+                                                                        \
+    item->mType = kType##NAME;                                          \
+    item->u.FIELDNAME = value;                                          \
 }                                                                       \
                                                                         \
 /* NOLINT added to avoid incorrect warning/fix from clang.tidy */       \
@@ -303,10 +298,8 @@ BASIC_TYPE(Pointer,ptrValue,void *)
 void AMessage::setString(
         const char *name, const char *s, ssize_t len) {
     Item *item = allocateItem(name);
-    if (item) {
-        item->mType = kTypeString;
-        item->u.stringValue = new AString(s, len < 0 ? strlen(s) : len);
-    }
+    item->mType = kTypeString;
+    item->u.stringValue = new AString(s, len < 0 ? strlen(s) : len);
 }
 
 void AMessage::setString(
@@ -317,12 +310,10 @@ void AMessage::setString(
 void AMessage::setObjectInternal(
         const char *name, const sp<RefBase> &obj, Type type) {
     Item *item = allocateItem(name);
-    if (item) {
-        item->mType = type;
+    item->mType = type;
 
-        if (obj != NULL) { obj->incStrong(this); }
-        item->u.refValue = obj.get();
-    }
+    if (obj != NULL) { obj->incStrong(this); }
+    item->u.refValue = obj.get();
 }
 
 void AMessage::setObject(const char *name, const sp<RefBase> &obj) {
@@ -335,26 +326,22 @@ void AMessage::setBuffer(const char *name, const sp<ABuffer> &buffer) {
 
 void AMessage::setMessage(const char *name, const sp<AMessage> &obj) {
     Item *item = allocateItem(name);
-    if (item) {
-        item->mType = kTypeMessage;
+    item->mType = kTypeMessage;
 
-        if (obj != NULL) { obj->incStrong(this); }
-        item->u.refValue = obj.get();
-    }
+    if (obj != NULL) { obj->incStrong(this); }
+    item->u.refValue = obj.get();
 }
 
 void AMessage::setRect(
         const char *name,
         int32_t left, int32_t top, int32_t right, int32_t bottom) {
     Item *item = allocateItem(name);
-    if (item) {
-        item->mType = kTypeRect;
+    item->mType = kTypeRect;
 
-        item->u.rectValue.mLeft = left;
-        item->u.rectValue.mTop = top;
-        item->u.rectValue.mRight = right;
-        item->u.rectValue.mBottom = bottom;
-    }
+    item->u.rectValue.mLeft = left;
+    item->u.rectValue.mTop = top;
+    item->u.rectValue.mRight = right;
+    item->u.rectValue.mBottom = bottom;
 }
 
 bool AMessage::findString(const char *name, AString *value) const {
@@ -479,18 +466,18 @@ bool AMessage::senderAwaitsResponse(sp<AReplyToken> *replyToken) {
 
 sp<AMessage> AMessage::dup() const {
     sp<AMessage> msg = new AMessage(mWhat, mHandler.promote());
-    msg->mItems = mItems;
+    msg->mNumItems = mNumItems;
 
 #ifdef DUMP_STATS
     {
         Mutex::Autolock _l(gLock);
         ++gDupCalls;
-        gAverageDupItems += mItems.size();
+        gAverageDupItems += mNumItems;
         reportStats();
     }
 #endif
 
-    for (size_t i = 0; i < mItems.size(); ++i) {
+    for (size_t i = 0; i < mNumItems; ++i) {
         const Item *from = &mItems[i];
         Item *to = &msg->mItems[i];
 
@@ -573,7 +560,7 @@ AString AMessage::debugString(int32_t indent) const {
     }
     s.append(") = {\n");
 
-    for (size_t i = 0; i < mItems.size(); ++i) {
+    for (size_t i = 0; i < mNumItems; ++i) {
         const Item &item = mItems[i];
 
         switch (item.mType) {
@@ -659,27 +646,26 @@ AString AMessage::debugString(int32_t indent) const {
     return s;
 }
 
-#if !defined(__ANDROID_VNDK__) && !defined(__ANDROID_APEX__)
+#ifndef __ANDROID_VNDK__
 // static
 sp<AMessage> AMessage::FromParcel(const Parcel &parcel, size_t maxNestingLevel) {
     int32_t what = parcel.readInt32();
     sp<AMessage> msg = new AMessage();
     msg->setWhat(what);
 
-    size_t numItems = static_cast<size_t>(parcel.readInt32());
-    if (numItems > kMaxNumItems) {
+    msg->mNumItems = static_cast<size_t>(parcel.readInt32());
+    if (msg->mNumItems > kMaxNumItems) {
         ALOGE("Too large number of items clipped.");
-        numItems = kMaxNumItems;
+        msg->mNumItems = kMaxNumItems;
     }
-    msg->mItems.resize(numItems);
 
-    for (size_t i = 0; i < msg->mItems.size(); ++i) {
+    for (size_t i = 0; i < msg->mNumItems; ++i) {
         Item *item = &msg->mItems[i];
 
         const char *name = parcel.readCString();
         if (name == NULL) {
             ALOGE("Failed reading name for an item. Parsing aborted.");
-            msg->mItems.resize(i);
+            msg->mNumItems = i;
             break;
         }
 
@@ -723,7 +709,7 @@ sp<AMessage> AMessage::FromParcel(const Parcel &parcel, size_t maxNestingLevel) 
                 if (stringValue == NULL) {
                     ALOGE("Failed reading string value from a parcel. "
                         "Parsing aborted.");
-                    msg->mItems.resize(i);
+                    msg->mNumItems = i;
                     continue;
                     // The loop will terminate subsequently.
                 } else {
@@ -768,9 +754,11 @@ sp<AMessage> AMessage::FromParcel(const Parcel &parcel, size_t maxNestingLevel) 
 
 void AMessage::writeToParcel(Parcel *parcel) const {
     parcel->writeInt32(static_cast<int32_t>(mWhat));
-    parcel->writeInt32(static_cast<int32_t>(mItems.size()));
+    parcel->writeInt32(static_cast<int32_t>(mNumItems));
 
-    for (const Item &item : mItems) {
+    for (size_t i = 0; i < mNumItems; ++i) {
+        const Item &item = mItems[i];
+
         parcel->writeCString(item.mName);
         parcel->writeInt32(static_cast<int32_t>(item.mType));
 
@@ -825,7 +813,7 @@ void AMessage::writeToParcel(Parcel *parcel) const {
         }
     }
 }
-#endif  // !defined(__ANDROID_VNDK__) && !defined(__ANDROID_APEX__)
+#endif  // __ANDROID_VNDK__
 
 sp<AMessage> AMessage::changesFrom(const sp<const AMessage> &other, bool deep) const {
     if (other == NULL) {
@@ -840,7 +828,8 @@ sp<AMessage> AMessage::changesFrom(const sp<const AMessage> &other, bool deep) c
         diff->setTarget(mHandler.promote());
     }
 
-    for (const Item &item : mItems) {
+    for (size_t i = 0; i < mNumItems; ++i) {
+        const Item &item = mItems[i];
         const Item *oitem = other->findItem(item.mName, item.mType);
         switch (item.mType) {
             case kTypeInt32:
@@ -947,11 +936,11 @@ sp<AMessage> AMessage::changesFrom(const sp<const AMessage> &other, bool deep) c
 }
 
 size_t AMessage::countEntries() const {
-    return mItems.size();
+    return mNumItems;
 }
 
 const char *AMessage::getEntryNameAt(size_t index, Type *type) const {
-    if (index >= mItems.size()) {
+    if (index >= mNumItems) {
         *type = kTypeInt32;
 
         return NULL;
@@ -964,7 +953,7 @@ const char *AMessage::getEntryNameAt(size_t index, Type *type) const {
 
 AMessage::ItemData AMessage::getEntryAt(size_t index) const {
     ItemData it;
-    if (index < mItems.size()) {
+    if (index < mNumItems) {
         switch (mItems[index].mType) {
             case kTypeInt32:    it.set(mItems[index].u.int32Value); break;
             case kTypeInt64:    it.set(mItems[index].u.int64Value); break;
@@ -997,7 +986,7 @@ AMessage::ItemData AMessage::getEntryAt(size_t index) const {
 }
 
 status_t AMessage::setEntryNameAt(size_t index, const char *name) {
-    if (index >= mItems.size()) {
+    if (index >= mNumItems) {
         return BAD_INDEX;
     }
     if (name == nullptr) {
@@ -1007,7 +996,7 @@ status_t AMessage::setEntryNameAt(size_t index, const char *name) {
         return OK; // name has not changed
     }
     size_t len = strlen(name);
-    if (findItemIndex(name, len) < mItems.size()) {
+    if (findItemIndex(name, len) < mNumItems) {
         return ALREADY_EXISTS;
     }
     delete[] mItems[index].mName;
@@ -1022,7 +1011,7 @@ status_t AMessage::setEntryAt(size_t index, const ItemData &item) {
     sp<AMessage> msgValue;
     sp<ABuffer> bufValue;
 
-    if (index >= mItems.size()) {
+    if (index >= mNumItems) {
         return BAD_INDEX;
     }
     if (!item.used()) {
@@ -1071,41 +1060,29 @@ status_t AMessage::setEntryAt(size_t index, const ItemData &item) {
 }
 
 status_t AMessage::removeEntryAt(size_t index) {
-    if (index >= mItems.size()) {
+    if (index >= mNumItems) {
         return BAD_INDEX;
     }
     // delete entry data and objects
+    --mNumItems;
     delete[] mItems[index].mName;
     mItems[index].mName = nullptr;
     freeItemValue(&mItems[index]);
 
     // swap entry with last entry and clear last entry's data
-    size_t lastIndex = mItems.size() - 1;
-    if (index < lastIndex) {
-        mItems[index] = mItems[lastIndex];
-        mItems[lastIndex].mName = nullptr;
-        mItems[lastIndex].mType = kTypeInt32;
+    if (index < mNumItems) {
+        mItems[index] = mItems[mNumItems];
+        mItems[mNumItems].mName = nullptr;
+        mItems[mNumItems].mType = kTypeInt32;
     }
-    mItems.pop_back();
     return OK;
-}
-
-status_t AMessage::removeEntryByName(const char *name) {
-    if (name == nullptr) {
-        return BAD_VALUE;
-    }
-    size_t index = findEntryByName(name);
-    if (index >= mItems.size()) {
-        return BAD_INDEX;
-    }
-    return removeEntryAt(index);
 }
 
 void AMessage::setItem(const char *name, const ItemData &item) {
     if (item.used()) {
         Item *it = allocateItem(name);
         if (it != nullptr) {
-            setEntryAt(it - &mItems[0], item);
+            setEntryAt(it - mItems, item);
         }
     }
 }
@@ -1120,11 +1097,11 @@ void AMessage::extend(const sp<AMessage> &other) {
         return;
     }
 
-    for (size_t ix = 0; ix < other->mItems.size(); ++ix) {
+    for (size_t ix = 0; ix < other->mNumItems; ++ix) {
         Item *it = allocateItem(other->mItems[ix].mName);
         if (it != nullptr) {
             ItemData data = other->getEntryAt(ix);
-            setEntryAt(it - &mItems[0], data);
+            setEntryAt(it - mItems, data);
         }
     }
 }

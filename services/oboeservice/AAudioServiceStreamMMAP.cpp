@@ -19,7 +19,6 @@
 #include <utils/Log.h>
 
 #include <atomic>
-#include <inttypes.h>
 #include <iomanip>
 #include <iostream>
 #include <stdint.h>
@@ -163,8 +162,7 @@ aaudio_result_t AAudioServiceStreamMMAP::getFreeRunningPosition(int64_t *positio
     return result;
 }
 
-// Get timestamp from presentation position.
-// If it fails, get timestamp that was written by getFreeRunningPosition()
+// Get timestamp that was written by getFreeRunningPosition()
 aaudio_result_t AAudioServiceStreamMMAP::getHardwareTimestamp(int64_t *positionFrames,
                                                                 int64_t *timeNanos) {
 
@@ -176,17 +174,7 @@ aaudio_result_t AAudioServiceStreamMMAP::getHardwareTimestamp(int64_t *positionF
     sp<AAudioServiceEndpointMMAP> serviceEndpointMMAP =
             static_cast<AAudioServiceEndpointMMAP *>(endpoint.get());
 
-    // Disable this code temporarily because the HAL is not returning
-    // a useful result.
-#if 0
-    uint64_t position;
-    if (serviceEndpointMMAP->getExternalPosition(&position, timeNanos) == AAUDIO_OK) {
-        ALOGD("%s() getExternalPosition() says pos = %" PRIi64 ", time = %" PRIi64,
-                __func__, position, *timeNanos);
-        *positionFrames = (int64_t) position;
-        return AAUDIO_OK;
-    } else
-#endif
+    // TODO Get presentation timestamp from the HAL
     if (mAtomicStreamTimestamp.isValid()) {
         Timestamp timestamp = mAtomicStreamTimestamp.read();
         *positionFrames = timestamp.getPosition();

@@ -52,19 +52,18 @@ bool AWakeLock::acquire() {
             if (binder == NULL) {
                 ALOGW("could not get the power manager service");
             } else {
-                mPowerManager = interface_cast<os::IPowerManager>(binder);
+                mPowerManager = interface_cast<IPowerManager>(binder);
                 binder->linkToDeath(mDeathRecipient);
             }
         }
         if (mPowerManager != NULL) {
             sp<IBinder> binder = new BBinder();
             int64_t token = IPCThreadState::self()->clearCallingIdentity();
-            binder::Status status = mPowerManager->acquireWakeLock(
-                    binder, POWERMANAGER_PARTIAL_WAKE_LOCK,
-                    String16("AWakeLock"), String16("media"),
-                    {} /* workSource */, {} /* historyTag */, -1 /* displayId */);
+            status_t status = mPowerManager->acquireWakeLock(
+                    POWERMANAGER_PARTIAL_WAKE_LOCK,
+                    binder, String16("AWakeLock"), String16("media"));
             IPCThreadState::self()->restoreCallingIdentity(token);
-            if (status.isOk()) {
+            if (status == NO_ERROR) {
                 mWakeLockToken = binder;
                 mWakeLockCount++;
                 return true;

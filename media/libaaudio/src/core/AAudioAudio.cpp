@@ -87,30 +87,6 @@ AAUDIO_API void AAudioStreamBuilder_setDeviceId(AAudioStreamBuilder* builder,
     streamBuilder->setDeviceId(deviceId);
 }
 
-AAUDIO_API void AAudioStreamBuilder_setPackageName(AAudioStreamBuilder* builder,
-                                                   const char* packageName)
-{
-    AudioStreamBuilder *streamBuilder = convertAAudioBuilderToStreamBuilder(builder);
-    std::optional<std::string> optionalPackageName;
-    if (packageName != nullptr) {
-      optionalPackageName = std::string(packageName);
-    }
-    // Only system apps can read the op package name. For regular apps the
-    // regular package name is a sufficient replacement
-    streamBuilder->setOpPackageName(optionalPackageName);
-}
-
-AAUDIO_API void AAudioStreamBuilder_setAttributionTag(AAudioStreamBuilder* builder,
-                                                      const char* attributionTag)
-{
-    AudioStreamBuilder *streamBuilder = convertAAudioBuilderToStreamBuilder(builder);
-    std::optional<std::string> optionalAttrTag;
-    if (attributionTag != nullptr) {
-      optionalAttrTag = std::string(attributionTag);
-    }
-    streamBuilder->setAttributionTag(optionalAttrTag);
-}
-
 AAUDIO_API void AAudioStreamBuilder_setSampleRate(AAudioStreamBuilder* builder,
                                               int32_t sampleRate)
 {
@@ -233,6 +209,7 @@ AAUDIO_API aaudio_result_t  AAudioStreamBuilder_openStream(AAudioStreamBuilder* 
     AudioStreamBuilder *streamBuilder = COMMON_GET_FROM_BUILDER_OR_RETURN(streamPtr);
     aaudio_result_t result = streamBuilder->build(&audioStream);
     if (result == AAUDIO_OK) {
+        audioStream->registerPlayerBase();
         *streamPtr = (AAudioStream*) audioStream;
         id = audioStream->getId();
     } else {
@@ -278,16 +255,17 @@ AAUDIO_API aaudio_result_t  AAudioStream_close(AAudioStream* stream) {
     if (audioStream != nullptr) {
         aaudio_stream_id_t id = audioStream->getId();
         ALOGD("%s(s#%u) called ---------------", __func__, id);
-        result = audioStream->safeReleaseClose();
-        // safeReleaseClose will only fail if called illegally, for example, from a callback.
+        result = audioStream->safeRelease();
+        // safeRelease will only fail if called illegally, for example, from a callback.
         // That would result in deleting an active stream, which would cause a crash.
         if (result != AAUDIO_OK) {
             ALOGW("%s(s#%u) failed. Close it from another thread.",
                   __func__, id);
         } else {
             audioStream->unregisterPlayerBase();
-            // Allow the stream to be deleted.
-            AudioStreamBuilder::stopUsingStream(audioStream);
+             // Mark CLOSED to keep destructors from asserting.
+            audioStream->closeFinal();
+            delete audioStream;
         }
         ALOGD("%s(s#%u) returned %d ---------", __func__, id, result);
     }
@@ -371,8 +349,7 @@ AAUDIO_API aaudio_result_t AAudioStream_write(AAudioStream* stream,
 
     // Don't allow writes when playing with a callback.
     if (audioStream->isDataCallbackActive()) {
-        // A developer requested this warning because it would have saved lots of debugging.
-        ALOGW("%s() - Cannot write to a callback stream when running.", __func__);
+        ALOGD("Cannot write to a callback stream when running.");
         return AAUDIO_ERROR_INVALID_STATE;
     }
 

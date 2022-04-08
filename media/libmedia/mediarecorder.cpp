@@ -33,8 +33,6 @@
 
 namespace android {
 
-using content::AttributionSourceState;
-
 status_t MediaRecorder::setCamera(const sp<hardware::ICamera>& camera,
         const sp<ICameraRecordingProxy>& proxy)
 {
@@ -246,7 +244,6 @@ status_t MediaRecorder::setOutputFormat(int of)
         mCurrentState = MEDIA_RECORDER_ERROR;
         return ret;
     }
-    mOutputFormat = (output_format)of;
     mCurrentState = MEDIA_RECORDER_DATASOURCE_CONFIGURED;
     return ret;
 }
@@ -482,13 +479,6 @@ status_t MediaRecorder::setParameters(const String8& params) {
                            (MEDIA_RECORDER_PREPARED |
                             MEDIA_RECORDER_RECORDING |
                             MEDIA_RECORDER_ERROR));
-
-    // For RTP video, parameter should be set dynamically.
-    if (isInvalidState) {
-        if (mCurrentState == MEDIA_RECORDER_RECORDING &&
-            mOutputFormat == OUTPUT_FORMAT_RTP_AVP)
-            isInvalidState = false;
-    }
     if (isInvalidState) {
         ALOGE("setParameters is called in an invalid state: %d", mCurrentState);
         return INVALID_OPERATION;
@@ -747,7 +737,6 @@ void MediaRecorder::doCleanUp()
     mIsAudioEncoderSet = false;
     mIsVideoEncoderSet = false;
     mIsOutputFileSet   = false;
-    mOutputFormat      = OUTPUT_FORMAT_DEFAULT;
 }
 
 // Release should be OK in any state
@@ -760,14 +749,13 @@ status_t MediaRecorder::release()
     return INVALID_OPERATION;
 }
 
-MediaRecorder::MediaRecorder(const AttributionSourceState &attributionSource)
-        : mSurfaceMediaSource(NULL)
+MediaRecorder::MediaRecorder(const String16& opPackageName) : mSurfaceMediaSource(NULL)
 {
     ALOGV("constructor");
 
     const sp<IMediaPlayerService> service(getMediaPlayerService());
     if (service != NULL) {
-        mMediaRecorder = service->createMediaRecorder(attributionSource);
+        mMediaRecorder = service->createMediaRecorder(opPackageName);
     }
     if (mMediaRecorder != NULL) {
         mCurrentState = MEDIA_RECORDER_IDLE;
@@ -916,14 +904,4 @@ status_t MediaRecorder::getPortId(audio_port_handle_t *portId) const
     return mMediaRecorder->getPortId(portId);
 }
 
-status_t MediaRecorder::getRtpDataUsage(uint64_t *bytes)
-{
-    ALOGV("getRtpDataUsage");
-
-    if (mMediaRecorder == NULL) {
-        ALOGE("media recorder is not initialized yet");
-        return INVALID_OPERATION;
-    }
-    return mMediaRecorder->getRtpDataUsage(bytes);
-}
 } // namespace android

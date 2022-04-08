@@ -324,76 +324,26 @@ class C2SoftVpxEnc::IntfImpl : public SimpleInterface<void>::BaseParams {
                 .withConstValue(new C2StreamIntraRefreshTuning::output(
                              0u, C2Config::INTRA_REFRESH_DISABLED, 0.))
                 .build());
-#ifdef VP9
+
         addParameter(
-                DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
-                .withDefault(new C2StreamProfileLevelInfo::output(
-                        0u, PROFILE_VP9_0, LEVEL_VP9_4_1))
-                .withFields({
-                    C2F(mProfileLevel, profile).equalTo(
-                        PROFILE_VP9_0
-                    ),
-                    C2F(mProfileLevel, level).equalTo(
-                        LEVEL_VP9_4_1),
-                })
-                .withSetter(ProfileLevelSetter)
-                .build());
-#else
-        addParameter(
-                DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
-                .withDefault(new C2StreamProfileLevelInfo::output(
-                        0u, PROFILE_VP8_0, LEVEL_UNUSED))
-                .withFields({
-                    C2F(mProfileLevel, profile).equalTo(
-                        PROFILE_VP8_0
-                    ),
-                    C2F(mProfileLevel, level).equalTo(
-                        LEVEL_UNUSED),
-                })
-                .withSetter(ProfileLevelSetter)
-                .build());
-#endif
+        DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
+        .withDefault(new C2StreamProfileLevelInfo::output(
+                0u, PROFILE_VP9_0, LEVEL_VP9_4_1))
+        .withFields({
+            C2F(mProfileLevel, profile).equalTo(
+                PROFILE_VP9_0
+            ),
+            C2F(mProfileLevel, level).equalTo(
+                LEVEL_VP9_4_1),
+        })
+        .withSetter(ProfileLevelSetter)
+        .build());
+
         addParameter(
                 DefineParam(mRequestSync, C2_PARAMKEY_REQUEST_SYNC_FRAME)
                 .withDefault(new C2StreamRequestSyncFrameTuning::output(0u, C2_FALSE))
                 .withFields({C2F(mRequestSync, value).oneOf({ C2_FALSE, C2_TRUE }) })
                 .withSetter(Setter<decltype(*mRequestSync)>::NonStrictValueWithNoDeps)
-                .build());
-
-        addParameter(
-                DefineParam(mColorAspects, C2_PARAMKEY_COLOR_ASPECTS)
-                .withDefault(new C2StreamColorAspectsInfo::input(
-                        0u, C2Color::RANGE_UNSPECIFIED, C2Color::PRIMARIES_UNSPECIFIED,
-                        C2Color::TRANSFER_UNSPECIFIED, C2Color::MATRIX_UNSPECIFIED))
-                .withFields({
-                    C2F(mColorAspects, range).inRange(
-                                C2Color::RANGE_UNSPECIFIED,     C2Color::RANGE_OTHER),
-                    C2F(mColorAspects, primaries).inRange(
-                                C2Color::PRIMARIES_UNSPECIFIED, C2Color::PRIMARIES_OTHER),
-                    C2F(mColorAspects, transfer).inRange(
-                                C2Color::TRANSFER_UNSPECIFIED,  C2Color::TRANSFER_OTHER),
-                    C2F(mColorAspects, matrix).inRange(
-                                C2Color::MATRIX_UNSPECIFIED,    C2Color::MATRIX_OTHER)
-                })
-                .withSetter(ColorAspectsSetter)
-                .build());
-
-        addParameter(
-                DefineParam(mCodedColorAspects, C2_PARAMKEY_VUI_COLOR_ASPECTS)
-                .withDefault(new C2StreamColorAspectsInfo::output(
-                        0u, C2Color::RANGE_LIMITED, C2Color::PRIMARIES_UNSPECIFIED,
-                        C2Color::TRANSFER_UNSPECIFIED, C2Color::MATRIX_UNSPECIFIED))
-                .withFields({
-                    C2F(mCodedColorAspects, range).inRange(
-                                C2Color::RANGE_UNSPECIFIED,     C2Color::RANGE_OTHER),
-                    C2F(mCodedColorAspects, primaries).inRange(
-                                C2Color::PRIMARIES_UNSPECIFIED, C2Color::PRIMARIES_OTHER),
-                    C2F(mCodedColorAspects, transfer).inRange(
-                                C2Color::TRANSFER_UNSPECIFIED,  C2Color::TRANSFER_OTHER),
-                    C2F(mCodedColorAspects, matrix).inRange(
-                                C2Color::MATRIX_UNSPECIFIED,    C2Color::MATRIX_OTHER)
-                })
-                .withSetter(CodedColorAspectsSetter, mColorAspects)
                 .build());
     }
 
@@ -465,31 +415,6 @@ class C2SoftVpxEnc::IntfImpl : public SimpleInterface<void>::BaseParams {
         double period = mSyncFramePeriod->value / 1e6 * mFrameRate->value;
         return (uint32_t)c2_max(c2_min(period + 0.5, double(UINT32_MAX)), 1.);
     }
-    static C2R ColorAspectsSetter(bool mayBlock, C2P<C2StreamColorAspectsInfo::input> &me) {
-        (void)mayBlock;
-        if (me.v.range > C2Color::RANGE_OTHER) {
-                me.set().range = C2Color::RANGE_OTHER;
-        }
-        if (me.v.primaries > C2Color::PRIMARIES_OTHER) {
-                me.set().primaries = C2Color::PRIMARIES_OTHER;
-        }
-        if (me.v.transfer > C2Color::TRANSFER_OTHER) {
-                me.set().transfer = C2Color::TRANSFER_OTHER;
-        }
-        if (me.v.matrix > C2Color::MATRIX_OTHER) {
-                me.set().matrix = C2Color::MATRIX_OTHER;
-        }
-        return C2R::Ok();
-    }
-    static C2R CodedColorAspectsSetter(bool mayBlock, C2P<C2StreamColorAspectsInfo::output> &me,
-                                       const C2P<C2StreamColorAspectsInfo::input> &coded) {
-        (void)mayBlock;
-        me.set().range = coded.v.range;
-        me.set().primaries = coded.v.primaries;
-        me.set().transfer = coded.v.transfer;
-        me.set().matrix = coded.v.matrix;
-        return C2R::Ok();
-    }
 
    private:
     std::shared_ptr<C2StreamUsageTuning::input> mUsage;
@@ -502,8 +427,6 @@ class C2SoftVpxEnc::IntfImpl : public SimpleInterface<void>::BaseParams {
     std::shared_ptr<C2StreamBitrateInfo::output> mBitrate;
     std::shared_ptr<C2StreamBitrateModeTuning::output> mBitrateMode;
     std::shared_ptr<C2StreamProfileLevelInfo::output> mProfileLevel;
-    std::shared_ptr<C2StreamColorAspectsInfo::input> mColorAspects;
-    std::shared_ptr<C2StreamColorAspectsInfo::output> mCodedColorAspects;
 };
 
 }  // namespace android

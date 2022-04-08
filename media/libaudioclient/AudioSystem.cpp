@@ -19,40 +19,22 @@
 
 #include <utils/Log.h>
 
-#include <android/media/IAudioPolicyService.h>
 #include <android/media/BnCaptureStateListener.h>
 #include <binder/IServiceManager.h>
 #include <binder/ProcessState.h>
 #include <binder/IPCThreadState.h>
-#include <media/AidlConversion.h>
 #include <media/AudioResamplerPublic.h>
 #include <media/AudioSystem.h>
 #include <media/IAudioFlinger.h>
-#include <media/PolicyAidlConversion.h>
+#include <media/IAudioPolicyService.h>
 #include <media/TypeConverter.h>
 #include <math.h>
 
 #include <system/audio.h>
-#include <android/media/GetInputForAttrResponse.h>
-
-#define VALUE_OR_RETURN_BINDER_STATUS(x) \
-    ({ auto _tmp = (x); \
-       if (!_tmp.ok()) return aidl_utils::binderStatusFromStatusT(_tmp.error()); \
-       std::move(_tmp.value()); })
-
-#define RETURN_STATUS_IF_ERROR(x)    \
-    {                                \
-        auto _tmp = (x);             \
-        if (_tmp != OK) return _tmp; \
-    }
 
 // ----------------------------------------------------------------------------
 
 namespace android {
-using aidl_utils::statusTFromBinderStatus;
-using binder::Status;
-using media::IAudioPolicyService;
-using android::content::AttributionSourceState;
 
 // client singleton for AudioFlinger binder interface
 Mutex AudioSystem::gLock;
@@ -63,62 +45,36 @@ sp<AudioSystem::AudioFlingerClient> AudioSystem::gAudioFlingerClient;
 std::set<audio_error_callback> AudioSystem::gAudioErrorCallbacks;
 dynamic_policy_callback AudioSystem::gDynPolicyCallback = NULL;
 record_config_callback AudioSystem::gRecordConfigCallback = NULL;
-routing_callback AudioSystem::gRoutingCallback = NULL;
 
 // Required to be held while calling into gSoundTriggerCaptureStateListener.
-class CaptureStateListenerImpl;
-
 Mutex gSoundTriggerCaptureStateListenerLock;
-sp<CaptureStateListenerImpl> gSoundTriggerCaptureStateListener = nullptr;
-
-// Binder for the AudioFlinger service that's passed to this client process from the system server.
-// This allows specific isolated processes to access the audio system. Currently used only for the
-// HotwordDetectionService.
-sp<IBinder> gAudioFlingerBinder = nullptr;
-
-void AudioSystem::setAudioFlingerBinder(const sp<IBinder>& audioFlinger) {
-    if (audioFlinger->getInterfaceDescriptor() != media::IAudioFlingerService::descriptor) {
-        ALOGE("setAudioFlingerBinder: received a binder of type %s",
-              String8(audioFlinger->getInterfaceDescriptor()).string());
-        return;
-    }
-    Mutex::Autolock _l(gLock);
-    if (gAudioFlinger != nullptr) {
-        ALOGW("setAudioFlingerBinder: ignoring; AudioFlinger connection already established.");
-        return;
-    }
-    gAudioFlingerBinder = audioFlinger;
-}
+sp<AudioSystem::CaptureStateListener> gSoundTriggerCaptureStateListener = nullptr;
 
 // establish binder interface to AudioFlinger service
-const sp<IAudioFlinger> AudioSystem::get_audio_flinger() {
+const sp<IAudioFlinger> AudioSystem::get_audio_flinger()
+{
     sp<IAudioFlinger> af;
     sp<AudioFlingerClient> afc;
     bool reportNoError = false;
     {
         Mutex::Autolock _l(gLock);
         if (gAudioFlinger == 0) {
+            sp<IServiceManager> sm = defaultServiceManager();
             sp<IBinder> binder;
-            if (gAudioFlingerBinder != nullptr) {
-                binder = gAudioFlingerBinder;
-            } else {
-                sp<IServiceManager> sm = defaultServiceManager();
-                do {
-                    binder = sm->getService(String16(IAudioFlinger::DEFAULT_SERVICE_NAME));
-                    if (binder != 0)
-                        break;
-                    ALOGW("AudioFlinger not published, waiting...");
-                    usleep(500000); // 0.5 s
-                } while (true);
-            }
+            do {
+                binder = sm->getService(String16("media.audio_flinger"));
+                if (binder != 0)
+                    break;
+                ALOGW("AudioFlinger not published, waiting...");
+                usleep(500000); // 0.5 s
+            } while (true);
             if (gAudioFlingerClient == NULL) {
                 gAudioFlingerClient = new AudioFlingerClient();
             } else {
                 reportNoError = true;
             }
             binder->linkToDeath(gAudioFlingerClient);
-            gAudioFlinger = new AudioFlingerClientAdapter(
-                    interface_cast<media::IAudioFlingerService>(binder));
+            gAudioFlinger = interface_cast<IAudioFlinger>(binder);
             LOG_ALWAYS_FATAL_IF(gAudioFlinger == 0);
             afc = gAudioFlingerClient;
             // Make sure callbacks can be received by gAudioFlingerClient
@@ -135,7 +91,8 @@ const sp<IAudioFlinger> AudioSystem::get_audio_flinger() {
     return af;
 }
 
-const sp<AudioSystem::AudioFlingerClient> AudioSystem::getAudioFlingerClient() {
+const sp<AudioSystem::AudioFlingerClient> AudioSystem::getAudioFlingerClient()
+{
     // calling get_audio_flinger() will initialize gAudioFlingerClient if needed
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return 0;
@@ -143,7 +100,8 @@ const sp<AudioSystem::AudioFlingerClient> AudioSystem::getAudioFlingerClient() {
     return gAudioFlingerClient;
 }
 
-sp<AudioIoDescriptor> AudioSystem::getIoDescriptor(audio_io_handle_t ioHandle) {
+sp<AudioIoDescriptor> AudioSystem::getIoDescriptor(audio_io_handle_t ioHandle)
+{
     sp<AudioIoDescriptor> desc;
     const sp<AudioFlingerClient> afc = getAudioFlingerClient();
     if (afc != 0) {
@@ -152,7 +110,8 @@ sp<AudioIoDescriptor> AudioSystem::getIoDescriptor(audio_io_handle_t ioHandle) {
     return desc;
 }
 
-/* static */ status_t AudioSystem::checkAudioFlinger() {
+/* static */ status_t AudioSystem::checkAudioFlinger()
+{
     if (defaultServiceManager()->checkService(String16("media.audio_flinger")) != 0) {
         return NO_ERROR;
     }
@@ -161,41 +120,47 @@ sp<AudioIoDescriptor> AudioSystem::getIoDescriptor(audio_io_handle_t ioHandle) {
 
 // FIXME Declare in binder opcode order, similarly to IAudioFlinger.h and IAudioFlinger.cpp
 
-status_t AudioSystem::muteMicrophone(bool state) {
+status_t AudioSystem::muteMicrophone(bool state)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     return af->setMicMute(state);
 }
 
-status_t AudioSystem::isMicrophoneMuted(bool* state) {
+status_t AudioSystem::isMicrophoneMuted(bool* state)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     *state = af->getMicMute();
     return NO_ERROR;
 }
 
-status_t AudioSystem::setMasterVolume(float value) {
+status_t AudioSystem::setMasterVolume(float value)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     af->setMasterVolume(value);
     return NO_ERROR;
 }
 
-status_t AudioSystem::setMasterMute(bool mute) {
+status_t AudioSystem::setMasterMute(bool mute)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     af->setMasterMute(mute);
     return NO_ERROR;
 }
 
-status_t AudioSystem::getMasterVolume(float* volume) {
+status_t AudioSystem::getMasterVolume(float* volume)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     *volume = af->masterVolume();
     return NO_ERROR;
 }
 
-status_t AudioSystem::getMasterMute(bool* mute) {
+status_t AudioSystem::getMasterMute(bool* mute)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     *mute = af->masterMute();
@@ -203,7 +168,8 @@ status_t AudioSystem::getMasterMute(bool* mute) {
 }
 
 status_t AudioSystem::setStreamVolume(audio_stream_type_t stream, float value,
-                                      audio_io_handle_t output) {
+        audio_io_handle_t output)
+{
     if (uint32_t(stream) >= AUDIO_STREAM_CNT) return BAD_VALUE;
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
@@ -211,7 +177,8 @@ status_t AudioSystem::setStreamVolume(audio_stream_type_t stream, float value,
     return NO_ERROR;
 }
 
-status_t AudioSystem::setStreamMute(audio_stream_type_t stream, bool mute) {
+status_t AudioSystem::setStreamMute(audio_stream_type_t stream, bool mute)
+{
     if (uint32_t(stream) >= AUDIO_STREAM_CNT) return BAD_VALUE;
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
@@ -220,7 +187,8 @@ status_t AudioSystem::setStreamMute(audio_stream_type_t stream, bool mute) {
 }
 
 status_t AudioSystem::getStreamVolume(audio_stream_type_t stream, float* volume,
-                                      audio_io_handle_t output) {
+        audio_io_handle_t output)
+{
     if (uint32_t(stream) >= AUDIO_STREAM_CNT) return BAD_VALUE;
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
@@ -228,7 +196,8 @@ status_t AudioSystem::getStreamVolume(audio_stream_type_t stream, float* volume,
     return NO_ERROR;
 }
 
-status_t AudioSystem::getStreamMute(audio_stream_type_t stream, bool* mute) {
+status_t AudioSystem::getStreamMute(audio_stream_type_t stream, bool* mute)
+{
     if (uint32_t(stream) >= AUDIO_STREAM_CNT) return BAD_VALUE;
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
@@ -236,20 +205,23 @@ status_t AudioSystem::getStreamMute(audio_stream_type_t stream, bool* mute) {
     return NO_ERROR;
 }
 
-status_t AudioSystem::setMode(audio_mode_t mode) {
+status_t AudioSystem::setMode(audio_mode_t mode)
+{
     if (uint32_t(mode) >= AUDIO_MODE_CNT) return BAD_VALUE;
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     return af->setMode(mode);
 }
 
-status_t AudioSystem::setParameters(audio_io_handle_t ioHandle, const String8& keyValuePairs) {
+status_t AudioSystem::setParameters(audio_io_handle_t ioHandle, const String8& keyValuePairs)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     return af->setParameters(ioHandle, keyValuePairs);
 }
 
-String8 AudioSystem::getParameters(audio_io_handle_t ioHandle, const String8& keys) {
+String8 AudioSystem::getParameters(audio_io_handle_t ioHandle, const String8& keys)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     String8 result = String8("");
     if (af == 0) return result;
@@ -258,11 +230,13 @@ String8 AudioSystem::getParameters(audio_io_handle_t ioHandle, const String8& ke
     return result;
 }
 
-status_t AudioSystem::setParameters(const String8& keyValuePairs) {
+status_t AudioSystem::setParameters(const String8& keyValuePairs)
+{
     return setParameters(AUDIO_IO_HANDLE_NONE, keyValuePairs);
 }
 
-String8 AudioSystem::getParameters(const String8& keys) {
+String8 AudioSystem::getParameters(const String8& keys)
+{
     return getParameters(AUDIO_IO_HANDLE_NONE, keys);
 }
 
@@ -274,14 +248,16 @@ static const float dBPerStep = 0.5f;
 static const float dBConvert = -dBPerStep * 2.302585093f / 20.0f;
 static const float dBConvertInverse = 1.0f / dBConvert;
 
-float AudioSystem::linearToLog(int volume) {
+float AudioSystem::linearToLog(int volume)
+{
     // float v = volume ? exp(float(100 - volume) * dBConvert) : 0;
     // ALOGD("linearToLog(%d)=%f", volume, v);
     // return v;
     return volume ? exp(float(100 - volume) * dBConvert) : 0;
 }
 
-int AudioSystem::logToLinear(float volume) {
+int AudioSystem::logToLinear(float volume)
+{
     // int v = volume ? 100 - int(dBConvertInverse * log(volume) + 0.5) : 0;
     // ALOGD("logTolinear(%d)=%f", v, volume);
     // return v;
@@ -290,30 +266,31 @@ int AudioSystem::logToLinear(float volume) {
 
 /* static */ size_t AudioSystem::calculateMinFrameCount(
         uint32_t afLatencyMs, uint32_t afFrameCount, uint32_t afSampleRate,
-        uint32_t sampleRate, float speed /*, uint32_t notificationsPerBufferReq*/) {
+        uint32_t sampleRate, float speed /*, uint32_t notificationsPerBufferReq*/)
+{
     // Ensure that buffer depth covers at least audio hardware latency
     uint32_t minBufCount = afLatencyMs / ((1000 * afFrameCount) / afSampleRate);
     if (minBufCount < 2) {
         minBufCount = 2;
     }
 #if 0
-        // The notificationsPerBufferReq parameter is not yet used for non-fast tracks,
-        // but keeping the code here to make it easier to add later.
-        if (minBufCount < notificationsPerBufferReq) {
-            minBufCount = notificationsPerBufferReq;
-        }
+    // The notificationsPerBufferReq parameter is not yet used for non-fast tracks,
+    // but keeping the code here to make it easier to add later.
+    if (minBufCount < notificationsPerBufferReq) {
+        minBufCount = notificationsPerBufferReq;
+    }
 #endif
     ALOGV("calculateMinFrameCount afLatency %u  afFrameCount %u  afSampleRate %u  "
-          "sampleRate %u  speed %f  minBufCount: %u" /*"  notificationsPerBufferReq %u"*/,
-          afLatencyMs, afFrameCount, afSampleRate, sampleRate, speed, minBufCount
-    /*, notificationsPerBufferReq*/);
+            "sampleRate %u  speed %f  minBufCount: %u" /*"  notificationsPerBufferReq %u"*/,
+            afLatencyMs, afFrameCount, afSampleRate, sampleRate, speed, minBufCount
+            /*, notificationsPerBufferReq*/);
     return minBufCount * sourceFramesNeededWithTimestretch(
             sampleRate, afFrameCount, afSampleRate, speed);
 }
 
 
-status_t
-AudioSystem::getOutputSamplingRate(uint32_t* samplingRate, audio_stream_type_t streamType) {
+status_t AudioSystem::getOutputSamplingRate(uint32_t* samplingRate, audio_stream_type_t streamType)
+{
     audio_io_handle_t output;
 
     if (streamType == AUDIO_STREAM_DEFAULT) {
@@ -329,7 +306,8 @@ AudioSystem::getOutputSamplingRate(uint32_t* samplingRate, audio_stream_type_t s
 }
 
 status_t AudioSystem::getSamplingRate(audio_io_handle_t ioHandle,
-                                      uint32_t* samplingRate) {
+                                      uint32_t* samplingRate)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     sp<AudioIoDescriptor> desc = getIoDescriptor(ioHandle);
@@ -348,7 +326,8 @@ status_t AudioSystem::getSamplingRate(audio_io_handle_t ioHandle,
     return NO_ERROR;
 }
 
-status_t AudioSystem::getOutputFrameCount(size_t* frameCount, audio_stream_type_t streamType) {
+status_t AudioSystem::getOutputFrameCount(size_t* frameCount, audio_stream_type_t streamType)
+{
     audio_io_handle_t output;
 
     if (streamType == AUDIO_STREAM_DEFAULT) {
@@ -364,7 +343,8 @@ status_t AudioSystem::getOutputFrameCount(size_t* frameCount, audio_stream_type_
 }
 
 status_t AudioSystem::getFrameCount(audio_io_handle_t ioHandle,
-                                    size_t* frameCount) {
+                                    size_t* frameCount)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     sp<AudioIoDescriptor> desc = getIoDescriptor(ioHandle);
@@ -383,7 +363,8 @@ status_t AudioSystem::getFrameCount(audio_io_handle_t ioHandle,
     return NO_ERROR;
 }
 
-status_t AudioSystem::getOutputLatency(uint32_t* latency, audio_stream_type_t streamType) {
+status_t AudioSystem::getOutputLatency(uint32_t* latency, audio_stream_type_t streamType)
+{
     audio_io_handle_t output;
 
     if (streamType == AUDIO_STREAM_DEFAULT) {
@@ -399,7 +380,8 @@ status_t AudioSystem::getOutputLatency(uint32_t* latency, audio_stream_type_t st
 }
 
 status_t AudioSystem::getLatency(audio_io_handle_t output,
-                                 uint32_t* latency) {
+                                 uint32_t* latency)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     sp<AudioIoDescriptor> outputDesc = getIoDescriptor(output);
@@ -415,7 +397,8 @@ status_t AudioSystem::getLatency(audio_io_handle_t output,
 }
 
 status_t AudioSystem::getInputBufferSize(uint32_t sampleRate, audio_format_t format,
-                                         audio_channel_mask_t channelMask, size_t* buffSize) {
+        audio_channel_mask_t channelMask, size_t* buffSize)
+{
     const sp<AudioFlingerClient> afc = getAudioFlingerClient();
     if (afc == 0) {
         return NO_INIT;
@@ -423,21 +406,24 @@ status_t AudioSystem::getInputBufferSize(uint32_t sampleRate, audio_format_t for
     return afc->getInputBufferSize(sampleRate, format, channelMask, buffSize);
 }
 
-status_t AudioSystem::setVoiceVolume(float value) {
+status_t AudioSystem::setVoiceVolume(float value)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     return af->setVoiceVolume(value);
 }
 
-status_t AudioSystem::getRenderPosition(audio_io_handle_t output, uint32_t* halFrames,
-                                        uint32_t* dspFrames) {
+status_t AudioSystem::getRenderPosition(audio_io_handle_t output, uint32_t *halFrames,
+                                        uint32_t *dspFrames)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
 
     return af->getRenderPosition(halFrames, dspFrames, output);
 }
 
-uint32_t AudioSystem::getInputFramesLost(audio_io_handle_t ioHandle) {
+uint32_t AudioSystem::getInputFramesLost(audio_io_handle_t ioHandle)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     uint32_t result = 0;
     if (af == 0) return result;
@@ -447,41 +433,47 @@ uint32_t AudioSystem::getInputFramesLost(audio_io_handle_t ioHandle) {
     return result;
 }
 
-audio_unique_id_t AudioSystem::newAudioUniqueId(audio_unique_id_use_t use) {
+audio_unique_id_t AudioSystem::newAudioUniqueId(audio_unique_id_use_t use)
+{
     // Must not use AF as IDs will re-roll on audioserver restart, b/130369529.
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return AUDIO_UNIQUE_ID_ALLOCATE;
     return af->newAudioUniqueId(use);
 }
 
-void AudioSystem::acquireAudioSessionId(audio_session_t audioSession, pid_t pid, uid_t uid) {
+void AudioSystem::acquireAudioSessionId(audio_session_t audioSession, pid_t pid, uid_t uid)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af != 0) {
         af->acquireAudioSessionId(audioSession, pid, uid);
     }
 }
 
-void AudioSystem::releaseAudioSessionId(audio_session_t audioSession, pid_t pid) {
+void AudioSystem::releaseAudioSessionId(audio_session_t audioSession, pid_t pid)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af != 0) {
         af->releaseAudioSessionId(audioSession, pid);
     }
 }
 
-audio_hw_sync_t AudioSystem::getAudioHwSyncForSession(audio_session_t sessionId) {
+audio_hw_sync_t AudioSystem::getAudioHwSyncForSession(audio_session_t sessionId)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return AUDIO_HW_SYNC_INVALID;
     return af->getAudioHwSyncForSession(sessionId);
 }
 
-status_t AudioSystem::systemReady() {
+status_t AudioSystem::systemReady()
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return NO_INIT;
     return af->systemReady();
 }
 
 status_t AudioSystem::getFrameCountHAL(audio_io_handle_t ioHandle,
-                                       size_t* frameCount) {
+                                       size_t* frameCount)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     sp<AudioIoDescriptor> desc = getIoDescriptor(ioHandle);
@@ -503,7 +495,8 @@ status_t AudioSystem::getFrameCountHAL(audio_io_handle_t ioHandle,
 // ---------------------------------------------------------------------------
 
 
-void AudioSystem::AudioFlingerClient::clearIoCache() {
+void AudioSystem::AudioFlingerClient::clearIoCache()
+{
     Mutex::Autolock _l(mLock);
     mIoDescriptors.clear();
     mInBuffSize = 0;
@@ -512,7 +505,8 @@ void AudioSystem::AudioFlingerClient::clearIoCache() {
     mInChannelMask = AUDIO_CHANNEL_NONE;
 }
 
-void AudioSystem::AudioFlingerClient::binderDied(const wp<IBinder>& who __unused) {
+void AudioSystem::AudioFlingerClient::binderDied(const wp<IBinder>& who __unused)
+{
     {
         Mutex::Autolock _l(AudioSystem::gLock);
         AudioSystem::gAudioFlinger.clear();
@@ -526,18 +520,11 @@ void AudioSystem::AudioFlingerClient::binderDied(const wp<IBinder>& who __unused
     ALOGW("AudioFlinger server died!");
 }
 
-Status AudioSystem::AudioFlingerClient::ioConfigChanged(
-        media::AudioIoConfigEvent _event,
-        const media::AudioIoDescriptor& _ioDesc) {
-    audio_io_config_event event = VALUE_OR_RETURN_BINDER_STATUS(
-            aidl2legacy_AudioIoConfigEvent_audio_io_config_event(_event));
-    sp<AudioIoDescriptor> ioDesc(
-            VALUE_OR_RETURN_BINDER_STATUS(
-                    aidl2legacy_AudioIoDescriptor_AudioIoDescriptor(_ioDesc)));
-
+void AudioSystem::AudioFlingerClient::ioConfigChanged(audio_io_config_event event,
+                                                      const sp<AudioIoDescriptor>& ioDesc) {
     ALOGV("ioConfigChanged() event %d", event);
 
-    if (ioDesc->mIoHandle == AUDIO_IO_HANDLE_NONE) return Status::ok();
+    if (ioDesc == 0 || ioDesc->mIoHandle == AUDIO_IO_HANDLE_NONE) return;
 
     audio_port_handle_t deviceId = AUDIO_PORT_HANDLE_NONE;
     std::vector<sp<AudioDeviceCallback>> callbacksToCall;
@@ -546,102 +533,95 @@ Status AudioSystem::AudioFlingerClient::ioConfigChanged(
         auto callbacks = std::map<audio_port_handle_t, wp<AudioDeviceCallback>>();
 
         switch (event) {
-            case AUDIO_OUTPUT_OPENED:
-            case AUDIO_OUTPUT_REGISTERED:
-            case AUDIO_INPUT_OPENED:
-            case AUDIO_INPUT_REGISTERED: {
-                sp<AudioIoDescriptor> oldDesc = getIoDescriptor_l(ioDesc->mIoHandle);
-                if (oldDesc == 0) {
-                    mIoDescriptors.add(ioDesc->mIoHandle, ioDesc);
-                } else {
-                    deviceId = oldDesc->getDeviceId();
-                    mIoDescriptors.replaceValueFor(ioDesc->mIoHandle, ioDesc);
-                }
-
-                if (ioDesc->getDeviceId() != AUDIO_PORT_HANDLE_NONE) {
-                    deviceId = ioDesc->getDeviceId();
-                    if (event == AUDIO_OUTPUT_OPENED || event == AUDIO_INPUT_OPENED) {
-                        auto it = mAudioDeviceCallbacks.find(ioDesc->mIoHandle);
-                        if (it != mAudioDeviceCallbacks.end()) {
-                            callbacks = it->second;
-                        }
-                    }
-                }
-                ALOGV("ioConfigChanged() new %s %s %d samplingRate %u, format %#x channel mask %#x "
-                      "frameCount %zu deviceId %d",
-                      event == AUDIO_OUTPUT_OPENED || event == AUDIO_OUTPUT_REGISTERED ?
-                      "output" : "input",
-                      event == AUDIO_OUTPUT_OPENED || event == AUDIO_INPUT_OPENED ?
-                      "opened" : "registered",
-                      ioDesc->mIoHandle, ioDesc->mSamplingRate, ioDesc->mFormat,
-                      ioDesc->mChannelMask,
-                      ioDesc->mFrameCount, ioDesc->getDeviceId());
-            }
-                break;
-            case AUDIO_OUTPUT_CLOSED:
-            case AUDIO_INPUT_CLOSED: {
-                if (getIoDescriptor_l(ioDesc->mIoHandle) == 0) {
-                    ALOGW("ioConfigChanged() closing unknown %s %d",
-                          event == AUDIO_OUTPUT_CLOSED ? "output" : "input", ioDesc->mIoHandle);
-                    break;
-                }
-                ALOGV("ioConfigChanged() %s %d closed",
-                      event == AUDIO_OUTPUT_CLOSED ? "output" : "input", ioDesc->mIoHandle);
-
-                mIoDescriptors.removeItem(ioDesc->mIoHandle);
-                mAudioDeviceCallbacks.erase(ioDesc->mIoHandle);
-            }
-                break;
-
-            case AUDIO_OUTPUT_CONFIG_CHANGED:
-            case AUDIO_INPUT_CONFIG_CHANGED: {
-                sp<AudioIoDescriptor> oldDesc = getIoDescriptor_l(ioDesc->mIoHandle);
-                if (oldDesc == 0) {
-                    ALOGW("ioConfigChanged() modifying unknown %s! %d",
-                          event == AUDIO_OUTPUT_CONFIG_CHANGED ? "output" : "input",
-                          ioDesc->mIoHandle);
-                    break;
-                }
-
+        case AUDIO_OUTPUT_OPENED:
+        case AUDIO_OUTPUT_REGISTERED:
+        case AUDIO_INPUT_OPENED:
+        case AUDIO_INPUT_REGISTERED: {
+            sp<AudioIoDescriptor> oldDesc = getIoDescriptor_l(ioDesc->mIoHandle);
+            if (oldDesc == 0) {
+                mIoDescriptors.add(ioDesc->mIoHandle, ioDesc);
+            } else {
                 deviceId = oldDesc->getDeviceId();
                 mIoDescriptors.replaceValueFor(ioDesc->mIoHandle, ioDesc);
+            }
 
-                if (deviceId != ioDesc->getDeviceId()) {
-                    deviceId = ioDesc->getDeviceId();
+            if (ioDesc->getDeviceId() != AUDIO_PORT_HANDLE_NONE) {
+                deviceId = ioDesc->getDeviceId();
+                if (event == AUDIO_OUTPUT_OPENED || event == AUDIO_INPUT_OPENED) {
                     auto it = mAudioDeviceCallbacks.find(ioDesc->mIoHandle);
                     if (it != mAudioDeviceCallbacks.end()) {
                         callbacks = it->second;
                     }
                 }
-                ALOGV("ioConfigChanged() new config for %s %d samplingRate %u, format %#x "
-                      "channel mask %#x frameCount %zu frameCountHAL %zu deviceId %d",
-                      event == AUDIO_OUTPUT_CONFIG_CHANGED ? "output" : "input",
-                      ioDesc->mIoHandle, ioDesc->mSamplingRate, ioDesc->mFormat,
-                      ioDesc->mChannelMask, ioDesc->mFrameCount, ioDesc->mFrameCountHAL,
-                      ioDesc->getDeviceId());
-
             }
+            ALOGV("ioConfigChanged() new %s %s %d samplingRate %u, format %#x channel mask %#x "
+                    "frameCount %zu deviceId %d",
+                    event == AUDIO_OUTPUT_OPENED || event == AUDIO_OUTPUT_REGISTERED ?
+                            "output" : "input",
+                            event == AUDIO_OUTPUT_OPENED || event == AUDIO_INPUT_OPENED ?
+                            "opened" : "registered",
+                    ioDesc->mIoHandle, ioDesc->mSamplingRate, ioDesc->mFormat, ioDesc->mChannelMask,
+                    ioDesc->mFrameCount, ioDesc->getDeviceId());
+            } break;
+        case AUDIO_OUTPUT_CLOSED:
+        case AUDIO_INPUT_CLOSED: {
+            if (getIoDescriptor_l(ioDesc->mIoHandle) == 0) {
+                ALOGW("ioConfigChanged() closing unknown %s %d",
+                      event == AUDIO_OUTPUT_CLOSED ? "output" : "input", ioDesc->mIoHandle);
                 break;
-            case AUDIO_CLIENT_STARTED: {
-                sp<AudioIoDescriptor> oldDesc = getIoDescriptor_l(ioDesc->mIoHandle);
-                if (oldDesc == 0) {
-                    ALOGW("ioConfigChanged() start client on unknown io! %d", ioDesc->mIoHandle);
-                    break;
-                }
-                ALOGV("ioConfigChanged() AUDIO_CLIENT_STARTED  io %d port %d num callbacks %zu",
-                      ioDesc->mIoHandle, ioDesc->mPortId, mAudioDeviceCallbacks.size());
-                oldDesc->mPatch = ioDesc->mPatch;
+            }
+            ALOGV("ioConfigChanged() %s %d closed",
+                  event == AUDIO_OUTPUT_CLOSED ? "output" : "input", ioDesc->mIoHandle);
+
+            mIoDescriptors.removeItem(ioDesc->mIoHandle);
+            mAudioDeviceCallbacks.erase(ioDesc->mIoHandle);
+            } break;
+
+        case AUDIO_OUTPUT_CONFIG_CHANGED:
+        case AUDIO_INPUT_CONFIG_CHANGED: {
+            sp<AudioIoDescriptor> oldDesc = getIoDescriptor_l(ioDesc->mIoHandle);
+            if (oldDesc == 0) {
+                ALOGW("ioConfigChanged() modifying unknown output! %d", ioDesc->mIoHandle);
+                break;
+            }
+
+            deviceId = oldDesc->getDeviceId();
+            mIoDescriptors.replaceValueFor(ioDesc->mIoHandle, ioDesc);
+
+            if (deviceId != ioDesc->getDeviceId()) {
+                deviceId = ioDesc->getDeviceId();
                 auto it = mAudioDeviceCallbacks.find(ioDesc->mIoHandle);
                 if (it != mAudioDeviceCallbacks.end()) {
-                    auto cbks = it->second;
-                    auto it2 = cbks.find(ioDesc->mPortId);
-                    if (it2 != cbks.end()) {
-                        callbacks.emplace(ioDesc->mPortId, it2->second);
-                        deviceId = oldDesc->getDeviceId();
-                    }
+                    callbacks = it->second;
                 }
             }
+            ALOGV("ioConfigChanged() new config for %s %d samplingRate %u, format %#x "
+                    "channel mask %#x frameCount %zu frameCountHAL %zu deviceId %d",
+                    event == AUDIO_OUTPUT_CONFIG_CHANGED ? "output" : "input",
+                    ioDesc->mIoHandle, ioDesc->mSamplingRate, ioDesc->mFormat,
+                    ioDesc->mChannelMask, ioDesc->mFrameCount, ioDesc->mFrameCountHAL,
+                    ioDesc->getDeviceId());
+
+        } break;
+        case AUDIO_CLIENT_STARTED: {
+            sp<AudioIoDescriptor> oldDesc = getIoDescriptor_l(ioDesc->mIoHandle);
+            if (oldDesc == 0) {
+                ALOGW("ioConfigChanged() start client on unknown io! %d", ioDesc->mIoHandle);
                 break;
+            }
+            ALOGV("ioConfigChanged() AUDIO_CLIENT_STARTED  io %d port %d num callbacks %zu",
+                ioDesc->mIoHandle, ioDesc->mPortId, mAudioDeviceCallbacks.size());
+            oldDesc->mPatch = ioDesc->mPatch;
+            auto it = mAudioDeviceCallbacks.find(ioDesc->mIoHandle);
+            if (it != mAudioDeviceCallbacks.end()) {
+                auto cbks = it->second;
+                auto it2 = cbks.find(ioDesc->mPortId);
+                if (it2 != cbks.end()) {
+                   callbacks.emplace(ioDesc->mPortId, it2->second);
+                   deviceId = oldDesc->getDeviceId();
+                }
+            }
+        } break;
         }
 
         for (auto wpCbk : callbacks) {
@@ -658,13 +638,12 @@ Status AudioSystem::AudioFlingerClient::ioConfigChanged(
         // If callbacksToCall is not empty, it implies ioDesc->mIoHandle and deviceId are valid
         cb->onAudioDeviceUpdate(ioDesc->mIoHandle, deviceId);
     }
-
-    return Status::ok();
 }
 
 status_t AudioSystem::AudioFlingerClient::getInputBufferSize(
-        uint32_t sampleRate, audio_format_t format,
-        audio_channel_mask_t channelMask, size_t* buffSize) {
+                                                uint32_t sampleRate, audio_format_t format,
+                                                audio_channel_mask_t channelMask, size_t* buffSize)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) {
         return PERMISSION_DENIED;
@@ -676,7 +655,7 @@ status_t AudioSystem::AudioFlingerClient::getInputBufferSize(
         size_t inBuffSize = af->getInputBufferSize(sampleRate, format, channelMask);
         if (inBuffSize == 0) {
             ALOGE("AudioSystem::getInputBufferSize failed sampleRate %d format %#x channelMask %#x",
-                  sampleRate, format, channelMask);
+                    sampleRate, format, channelMask);
             return BAD_VALUE;
         }
         // A benign race is possible here: we could overwrite a fresher cache entry
@@ -693,8 +672,8 @@ status_t AudioSystem::AudioFlingerClient::getInputBufferSize(
     return NO_ERROR;
 }
 
-sp<AudioIoDescriptor>
-AudioSystem::AudioFlingerClient::getIoDescriptor_l(audio_io_handle_t ioHandle) {
+sp<AudioIoDescriptor> AudioSystem::AudioFlingerClient::getIoDescriptor_l(audio_io_handle_t ioHandle)
+{
     sp<AudioIoDescriptor> desc;
     ssize_t index = mIoDescriptors.indexOfKey(ioHandle);
     if (index >= 0) {
@@ -703,19 +682,19 @@ AudioSystem::AudioFlingerClient::getIoDescriptor_l(audio_io_handle_t ioHandle) {
     return desc;
 }
 
-sp<AudioIoDescriptor> AudioSystem::AudioFlingerClient::getIoDescriptor(audio_io_handle_t ioHandle) {
+sp<AudioIoDescriptor> AudioSystem::AudioFlingerClient::getIoDescriptor(audio_io_handle_t ioHandle)
+{
     Mutex::Autolock _l(mLock);
     return getIoDescriptor_l(ioHandle);
 }
 
 status_t AudioSystem::AudioFlingerClient::addAudioDeviceCallback(
         const wp<AudioDeviceCallback>& callback, audio_io_handle_t audioIo,
-        audio_port_handle_t portId) {
+        audio_port_handle_t portId)
+{
     ALOGV("%s audioIo %d portId %d", __func__, audioIo, portId);
     Mutex::Autolock _l(mLock);
-    auto& callbacks = mAudioDeviceCallbacks.emplace(
-            audioIo,
-            std::map<audio_port_handle_t, wp<AudioDeviceCallback>>()).first->second;
+    auto& callbacks = mAudioDeviceCallbacks.emplace(audioIo, std::map<audio_port_handle_t, wp<AudioDeviceCallback>>()).first->second;
     auto result = callbacks.try_emplace(portId, callback);
     if (!result.second) {
         return INVALID_OPERATION;
@@ -725,7 +704,8 @@ status_t AudioSystem::AudioFlingerClient::addAudioDeviceCallback(
 
 status_t AudioSystem::AudioFlingerClient::removeAudioDeviceCallback(
         const wp<AudioDeviceCallback>& callback __unused, audio_io_handle_t audioIo,
-        audio_port_handle_t portId) {
+        audio_port_handle_t portId)
+{
     ALOGV("%s audioIo %d portId %d", __func__, audioIo, portId);
     Mutex::Autolock _l(mLock);
     auto it = mAudioDeviceCallbacks.find(audioIo);
@@ -741,7 +721,8 @@ status_t AudioSystem::AudioFlingerClient::removeAudioDeviceCallback(
     return NO_ERROR;
 }
 
-/* static */ uintptr_t AudioSystem::addErrorCallback(audio_error_callback cb) {
+/* static */ uintptr_t AudioSystem::addErrorCallback(audio_error_callback cb)
+{
     Mutex::Autolock _l(gLockErrorCallbacks);
     gAudioErrorCallbacks.insert(cb);
     return reinterpret_cast<uintptr_t>(cb);
@@ -755,23 +736,20 @@ status_t AudioSystem::AudioFlingerClient::removeAudioDeviceCallback(
 /* static */ void AudioSystem::reportError(status_t err) {
     Mutex::Autolock _l(gLockErrorCallbacks);
     for (auto callback : gAudioErrorCallbacks) {
-        callback(err);
+      callback(err);
     }
 }
 
-/*static*/ void AudioSystem::setDynPolicyCallback(dynamic_policy_callback cb) {
+/*static*/ void AudioSystem::setDynPolicyCallback(dynamic_policy_callback cb)
+{
     Mutex::Autolock _l(gLock);
     gDynPolicyCallback = cb;
 }
 
-/*static*/ void AudioSystem::setRecordConfigCallback(record_config_callback cb) {
+/*static*/ void AudioSystem::setRecordConfigCallback(record_config_callback cb)
+{
     Mutex::Autolock _l(gLock);
     gRecordConfigCallback = cb;
-}
-
-/*static*/ void AudioSystem::setRoutingCallback(routing_callback cb) {
-    Mutex::Autolock _l(gLock);
-    gRoutingCallback = cb;
 }
 
 // client singleton for AudioPolicyService binder interface
@@ -781,7 +759,8 @@ sp<AudioSystem::AudioPolicyServiceClient> AudioSystem::gAudioPolicyServiceClient
 
 
 // establish binder interface to AudioPolicy service
-const sp<IAudioPolicyService> AudioSystem::get_audio_policy_service() {
+const sp<IAudioPolicyService> AudioSystem::get_audio_policy_service()
+{
     sp<IAudioPolicyService> ap;
     sp<AudioPolicyServiceClient> apc;
     {
@@ -821,7 +800,8 @@ const sp<IAudioPolicyService> AudioSystem::get_audio_policy_service() {
 
 // ---------------------------------------------------------------------------
 
-void AudioSystem::onNewAudioModulesAvailable() {
+void AudioSystem::onNewAudioModulesAvailable()
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return;
     aps->onNewAudioModulesAvailable();
@@ -829,12 +809,13 @@ void AudioSystem::onNewAudioModulesAvailable() {
 
 status_t AudioSystem::setDeviceConnectionState(audio_devices_t device,
                                                audio_policy_dev_state_t state,
-                                               const char* device_address,
-                                               const char* device_name,
-                                               audio_format_t encodedFormat) {
+                                               const char *device_address,
+                                               const char *device_name,
+                                               audio_format_t encodedFormat)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
-    const char* address = "";
-    const char* name = "";
+    const char *address = "";
+    const char *name = "";
 
     if (aps == 0) return PERMISSION_DENIED;
 
@@ -844,46 +825,26 @@ status_t AudioSystem::setDeviceConnectionState(audio_devices_t device,
     if (device_name != NULL) {
         name = device_name;
     }
-
-    media::AudioDevice deviceAidl;
-    deviceAidl.type = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_devices_t_int32_t(device));
-    deviceAidl.address = address;
-
-    return statusTFromBinderStatus(
-            aps->setDeviceConnectionState(
-                    deviceAidl,
-                    VALUE_OR_RETURN_STATUS(
-                            legacy2aidl_audio_policy_dev_state_t_AudioPolicyDeviceState(state)),
-                    name,
-                    VALUE_OR_RETURN_STATUS(legacy2aidl_audio_format_t_AudioFormat(encodedFormat))));
+    return aps->setDeviceConnectionState(device, state, address, name, encodedFormat);
 }
 
 audio_policy_dev_state_t AudioSystem::getDeviceConnectionState(audio_devices_t device,
-                                                               const char* device_address) {
+                                                  const char *device_address)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return AUDIO_POLICY_DEVICE_STATE_UNAVAILABLE;
 
-    auto result = [&]() -> ConversionResult<audio_policy_dev_state_t> {
-        media::AudioDevice deviceAidl;
-        deviceAidl.type = VALUE_OR_RETURN(legacy2aidl_audio_devices_t_int32_t(device));
-        deviceAidl.address = device_address;
-
-        media::AudioPolicyDeviceState result;
-        RETURN_IF_ERROR(statusTFromBinderStatus(
-                aps->getDeviceConnectionState(deviceAidl, &result)));
-
-        return aidl2legacy_AudioPolicyDeviceState_audio_policy_dev_state_t(result);
-    }();
-    return result.value_or(AUDIO_POLICY_DEVICE_STATE_UNAVAILABLE);
+    return aps->getDeviceConnectionState(device, device_address);
 }
 
 status_t AudioSystem::handleDeviceConfigChange(audio_devices_t device,
-                                               const char* device_address,
-                                               const char* device_name,
-                                               audio_format_t encodedFormat) {
+                                               const char *device_address,
+                                               const char *device_name,
+                                               audio_format_t encodedFormat)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
-    const char* address = "";
-    const char* name = "";
+    const char *address = "";
+    const char *name = "";
 
     if (aps == 0) return PERMISSION_DENIED;
 
@@ -893,528 +854,294 @@ status_t AudioSystem::handleDeviceConfigChange(audio_devices_t device,
     if (device_name != NULL) {
         name = device_name;
     }
-
-    media::AudioDevice deviceAidl;
-    deviceAidl.type = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_devices_t_int32_t(device));
-    deviceAidl.address = address;
-
-    return statusTFromBinderStatus(
-            aps->handleDeviceConfigChange(deviceAidl, name, VALUE_OR_RETURN_STATUS(
-                    legacy2aidl_audio_format_t_AudioFormat(encodedFormat))));
+    return aps->handleDeviceConfigChange(device, address, name, encodedFormat);
 }
 
-status_t AudioSystem::setPhoneState(audio_mode_t state, uid_t uid) {
+status_t AudioSystem::setPhoneState(audio_mode_t state, uid_t uid)
+{
     if (uint32_t(state) >= AUDIO_MODE_CNT) return BAD_VALUE;
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
 
-    return statusTFromBinderStatus(aps->setPhoneState(
-            VALUE_OR_RETURN_STATUS(legacy2aidl_audio_mode_t_AudioMode(state)),
-            VALUE_OR_RETURN_STATUS(legacy2aidl_uid_t_int32_t(uid))));
+    return aps->setPhoneState(state, uid);
 }
 
-status_t
-AudioSystem::setForceUse(audio_policy_force_use_t usage, audio_policy_forced_cfg_t config) {
+status_t AudioSystem::setForceUse(audio_policy_force_use_t usage, audio_policy_forced_cfg_t config)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    return statusTFromBinderStatus(
-            aps->setForceUse(
-                    VALUE_OR_RETURN_STATUS(
-                            legacy2aidl_audio_policy_force_use_t_AudioPolicyForceUse(usage)),
-                    VALUE_OR_RETURN_STATUS(
-                            legacy2aidl_audio_policy_forced_cfg_t_AudioPolicyForcedConfig(
-                                    config))));
+    return aps->setForceUse(usage, config);
 }
 
-audio_policy_forced_cfg_t AudioSystem::getForceUse(audio_policy_force_use_t usage) {
+audio_policy_forced_cfg_t AudioSystem::getForceUse(audio_policy_force_use_t usage)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return AUDIO_POLICY_FORCE_NONE;
-
-    auto result = [&]() -> ConversionResult<audio_policy_forced_cfg_t> {
-        media::AudioPolicyForceUse usageAidl = VALUE_OR_RETURN(
-                legacy2aidl_audio_policy_force_use_t_AudioPolicyForceUse(usage));
-        media::AudioPolicyForcedConfig configAidl;
-        RETURN_IF_ERROR(statusTFromBinderStatus(
-                aps->getForceUse(usageAidl, &configAidl)));
-        return aidl2legacy_AudioPolicyForcedConfig_audio_policy_forced_cfg_t(configAidl);
-    }();
-
-    return result.value_or(AUDIO_POLICY_FORCE_NONE);
+    return aps->getForceUse(usage);
 }
 
 
-audio_io_handle_t AudioSystem::getOutput(audio_stream_type_t stream) {
+audio_io_handle_t AudioSystem::getOutput(audio_stream_type_t stream)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
-    if (aps == 0) return AUDIO_IO_HANDLE_NONE;
-
-    auto result = [&]() -> ConversionResult<audio_io_handle_t> {
-        media::AudioStreamType streamAidl = VALUE_OR_RETURN(
-                legacy2aidl_audio_stream_type_t_AudioStreamType(stream));
-        int32_t outputAidl;
-        RETURN_IF_ERROR(
-                statusTFromBinderStatus(aps->getOutput(streamAidl, &outputAidl)));
-        return aidl2legacy_int32_t_audio_io_handle_t(outputAidl);
-    }();
-
-    return result.value_or(AUDIO_IO_HANDLE_NONE);
+    if (aps == 0) return 0;
+    return aps->getOutput(stream);
 }
 
-status_t AudioSystem::getOutputForAttr(audio_attributes_t* attr,
-                                       audio_io_handle_t* output,
-                                       audio_session_t session,
-                                       audio_stream_type_t* stream,
-                                       const AttributionSourceState& attributionSource,
-                                       const audio_config_t* config,
-                                       audio_output_flags_t flags,
-                                       audio_port_handle_t* selectedDeviceId,
-                                       audio_port_handle_t* portId,
-                                       std::vector<audio_io_handle_t>* secondaryOutputs) {
-    if (attr == nullptr) {
-        ALOGE("%s NULL audio attributes", __func__);
-        return BAD_VALUE;
-    }
-    if (output == nullptr) {
-        ALOGE("%s NULL output - shouldn't happen", __func__);
-        return BAD_VALUE;
-    }
-    if (selectedDeviceId == nullptr) {
-        ALOGE("%s NULL selectedDeviceId - shouldn't happen", __func__);
-        return BAD_VALUE;
-    }
-    if (portId == nullptr) {
-        ALOGE("%s NULL portId - shouldn't happen", __func__);
-        return BAD_VALUE;
-    }
-    if (secondaryOutputs == nullptr) {
-        ALOGE("%s NULL secondaryOutputs - shouldn't happen", __func__);
-        return BAD_VALUE;
-    }
-
+status_t AudioSystem::getOutputForAttr(audio_attributes_t *attr,
+                                        audio_io_handle_t *output,
+                                        audio_session_t session,
+                                        audio_stream_type_t *stream,
+                                        pid_t pid,
+                                        uid_t uid,
+                                        const audio_config_t *config,
+                                        audio_output_flags_t flags,
+                                        audio_port_handle_t *selectedDeviceId,
+                                        audio_port_handle_t *portId,
+                                        std::vector<audio_io_handle_t> *secondaryOutputs)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return NO_INIT;
-
-    media::AudioAttributesInternal attrAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_attributes_t_AudioAttributesInternal(*attr));
-    int32_t sessionAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_session_t_int32_t(session));
-    media::AudioConfig configAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_config_t_AudioConfig(*config));
-    int32_t flagsAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_output_flags_t_int32_t_mask(flags));
-    int32_t selectedDeviceIdAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_port_handle_t_int32_t(*selectedDeviceId));
-
-    media::GetOutputForAttrResponse responseAidl;
-
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getOutputForAttr(attrAidl, sessionAidl, attributionSource, configAidl, flagsAidl,
-                                  selectedDeviceIdAidl, &responseAidl)));
-
-    *output = VALUE_OR_RETURN_STATUS(
-            aidl2legacy_int32_t_audio_io_handle_t(responseAidl.output));
-
-    if (stream != nullptr) {
-        *stream = VALUE_OR_RETURN_STATUS(
-                aidl2legacy_AudioStreamType_audio_stream_type_t(responseAidl.stream));
-    }
-    *selectedDeviceId = VALUE_OR_RETURN_STATUS(
-            aidl2legacy_int32_t_audio_port_handle_t(responseAidl.selectedDeviceId));
-    *portId = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_audio_port_handle_t(responseAidl.portId));
-    *secondaryOutputs = VALUE_OR_RETURN_STATUS(convertContainer<std::vector<audio_io_handle_t>>(
-            responseAidl.secondaryOutputs, aidl2legacy_int32_t_audio_io_handle_t));
-
-    return OK;
+    return aps->getOutputForAttr(attr, output, session, stream, pid, uid,
+                                 config,
+                                 flags, selectedDeviceId, portId, secondaryOutputs);
 }
 
-status_t AudioSystem::startOutput(audio_port_handle_t portId) {
+status_t AudioSystem::startOutput(audio_port_handle_t portId)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t portIdAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_port_handle_t_int32_t(portId));
-    return statusTFromBinderStatus(aps->startOutput(portIdAidl));
+    return aps->startOutput(portId);
 }
 
-status_t AudioSystem::stopOutput(audio_port_handle_t portId) {
+status_t AudioSystem::stopOutput(audio_port_handle_t portId)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t portIdAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_port_handle_t_int32_t(portId));
-    return statusTFromBinderStatus(aps->stopOutput(portIdAidl));
+    return aps->stopOutput(portId);
 }
 
-void AudioSystem::releaseOutput(audio_port_handle_t portId) {
+void AudioSystem::releaseOutput(audio_port_handle_t portId)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return;
-
-    auto status = [&]() -> status_t {
-        int32_t portIdAidl = VALUE_OR_RETURN_STATUS(
-                legacy2aidl_audio_port_handle_t_int32_t(portId));
-        RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(aps->releaseOutput(portIdAidl)));
-        return OK;
-    }();
-
-    // Ignore status.
-    (void) status;
+    aps->releaseOutput(portId);
 }
 
-status_t AudioSystem::getInputForAttr(const audio_attributes_t* attr,
-                                      audio_io_handle_t* input,
-                                      audio_unique_id_t riid,
-                                      audio_session_t session,
-                                      const AttributionSourceState &attributionSource,
-                                      const audio_config_base_t* config,
-                                      audio_input_flags_t flags,
-                                      audio_port_handle_t* selectedDeviceId,
-                                      audio_port_handle_t* portId) {
-    if (attr == NULL) {
-        ALOGE("getInputForAttr NULL attr - shouldn't happen");
-        return BAD_VALUE;
-    }
-    if (input == NULL) {
-        ALOGE("getInputForAttr NULL input - shouldn't happen");
-        return BAD_VALUE;
-    }
-    if (selectedDeviceId == NULL) {
-        ALOGE("getInputForAttr NULL selectedDeviceId - shouldn't happen");
-        return BAD_VALUE;
-    }
-    if (portId == NULL) {
-        ALOGE("getInputForAttr NULL portId - shouldn't happen");
-        return BAD_VALUE;
-    }
-
+status_t AudioSystem::getInputForAttr(const audio_attributes_t *attr,
+                                audio_io_handle_t *input,
+                                audio_unique_id_t riid,
+                                audio_session_t session,
+                                pid_t pid,
+                                uid_t uid,
+                                const String16& opPackageName,
+                                const audio_config_base_t *config,
+                                audio_input_flags_t flags,
+                                audio_port_handle_t *selectedDeviceId,
+                                audio_port_handle_t *portId)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return NO_INIT;
-
-    media::AudioAttributesInternal attrAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_attributes_t_AudioAttributesInternal(*attr));
-    int32_t inputAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_io_handle_t_int32_t(*input));
-    int32_t riidAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_unique_id_t_int32_t(riid));
-    int32_t sessionAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_session_t_int32_t(session));
-    media::AudioConfigBase configAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_config_base_t_AudioConfigBase(*config));
-    int32_t flagsAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_input_flags_t_int32_t_mask(flags));
-    int32_t selectedDeviceIdAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_port_handle_t_int32_t(*selectedDeviceId));
-
-    media::GetInputForAttrResponse response;
-
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getInputForAttr(attrAidl, inputAidl, riidAidl, sessionAidl, attributionSource,
-                configAidl, flagsAidl, selectedDeviceIdAidl, &response)));
-
-    *input = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_audio_io_handle_t(response.input));
-    *selectedDeviceId = VALUE_OR_RETURN_STATUS(
-            aidl2legacy_int32_t_audio_port_handle_t(response.selectedDeviceId));
-    *portId = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_audio_port_handle_t(response.portId));
-
-    return OK;
+    return aps->getInputForAttr(
+            attr, input, riid, session, pid, uid, opPackageName,
+            config, flags, selectedDeviceId, portId);
 }
 
-status_t AudioSystem::startInput(audio_port_handle_t portId) {
+status_t AudioSystem::startInput(audio_port_handle_t portId)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t portIdAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_port_handle_t_int32_t(portId));
-    return statusTFromBinderStatus(aps->startInput(portIdAidl));
+    return aps->startInput(portId);
 }
 
-status_t AudioSystem::stopInput(audio_port_handle_t portId) {
+status_t AudioSystem::stopInput(audio_port_handle_t portId)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t portIdAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_port_handle_t_int32_t(portId));
-    return statusTFromBinderStatus(aps->stopInput(portIdAidl));
+    return aps->stopInput(portId);
 }
 
-void AudioSystem::releaseInput(audio_port_handle_t portId) {
+void AudioSystem::releaseInput(audio_port_handle_t portId)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return;
-
-    auto status = [&]() -> status_t {
-        int32_t portIdAidl = VALUE_OR_RETURN_STATUS(
-                legacy2aidl_audio_port_handle_t_int32_t(portId));
-        RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(aps->releaseInput(portIdAidl)));
-        return OK;
-    }();
-
-    // Ignore status.
-    (void) status;
+    aps->releaseInput(portId);
 }
 
 status_t AudioSystem::initStreamVolume(audio_stream_type_t stream,
-                                       int indexMin,
-                                       int indexMax) {
+                                    int indexMin,
+                                    int indexMax)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioStreamType streamAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_stream_type_t_AudioStreamType(stream));
-    int32_t indexMinAidl = VALUE_OR_RETURN_STATUS(convertIntegral<int32_t>(indexMin));
-    int32_t indexMaxAidl = VALUE_OR_RETURN_STATUS(convertIntegral<int32_t>(indexMax));
-    return statusTFromBinderStatus(
-            aps->initStreamVolume(streamAidl, indexMinAidl, indexMaxAidl));
+    return aps->initStreamVolume(stream, indexMin, indexMax);
 }
 
 status_t AudioSystem::setStreamVolumeIndex(audio_stream_type_t stream,
                                            int index,
-                                           audio_devices_t device) {
+                                           audio_devices_t device)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioStreamType streamAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_stream_type_t_AudioStreamType(stream));
-    int32_t indexAidl = VALUE_OR_RETURN_STATUS(convertIntegral<int32_t>(index));
-    int32_t deviceAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_devices_t_int32_t(device));
-    return statusTFromBinderStatus(
-            aps->setStreamVolumeIndex(streamAidl, deviceAidl, indexAidl));
+    return aps->setStreamVolumeIndex(stream, index, device);
 }
 
 status_t AudioSystem::getStreamVolumeIndex(audio_stream_type_t stream,
-                                           int* index,
-                                           audio_devices_t device) {
+                                           int *index,
+                                           audio_devices_t device)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioStreamType streamAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_stream_type_t_AudioStreamType(stream));
-    int32_t deviceAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_devices_t_int32_t(device));
-    int32_t indexAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getStreamVolumeIndex(streamAidl, deviceAidl, &indexAidl)));
-    if (index != nullptr) {
-        *index = VALUE_OR_RETURN_STATUS(convertIntegral<int>(indexAidl));
-    }
-    return OK;
+    return aps->getStreamVolumeIndex(stream, index, device);
 }
 
-status_t AudioSystem::setVolumeIndexForAttributes(const audio_attributes_t& attr,
+status_t AudioSystem::setVolumeIndexForAttributes(const audio_attributes_t &attr,
                                                   int index,
-                                                  audio_devices_t device) {
+                                                  audio_devices_t device)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioAttributesInternal attrAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_attributes_t_AudioAttributesInternal(attr));
-    int32_t indexAidl = VALUE_OR_RETURN_STATUS(convertIntegral<int32_t>(index));
-    int32_t deviceAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_devices_t_int32_t(device));
-    return statusTFromBinderStatus(
-            aps->setVolumeIndexForAttributes(attrAidl, deviceAidl, indexAidl));
+    return aps->setVolumeIndexForAttributes(attr, index, device);
 }
 
-status_t AudioSystem::getVolumeIndexForAttributes(const audio_attributes_t& attr,
-                                                  int& index,
-                                                  audio_devices_t device) {
+status_t AudioSystem::getVolumeIndexForAttributes(const audio_attributes_t &attr,
+                                                  int &index,
+                                                  audio_devices_t device)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioAttributesInternal attrAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_attributes_t_AudioAttributesInternal(attr));
-    int32_t deviceAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_devices_t_int32_t(device));
-    int32_t indexAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getVolumeIndexForAttributes(attrAidl, deviceAidl, &indexAidl)));
-    index = VALUE_OR_RETURN_STATUS(convertIntegral<int>(indexAidl));
-    return OK;
+    return aps->getVolumeIndexForAttributes(attr, index, device);
 }
 
-status_t AudioSystem::getMaxVolumeIndexForAttributes(const audio_attributes_t& attr, int& index) {
+status_t AudioSystem::getMaxVolumeIndexForAttributes(const audio_attributes_t &attr, int &index)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioAttributesInternal attrAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_attributes_t_AudioAttributesInternal(attr));
-    int32_t indexAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getMaxVolumeIndexForAttributes(attrAidl, &indexAidl)));
-    index = VALUE_OR_RETURN_STATUS(convertIntegral<int>(indexAidl));
-    return OK;
+    return aps->getMaxVolumeIndexForAttributes(attr, index);
 }
 
-status_t AudioSystem::getMinVolumeIndexForAttributes(const audio_attributes_t& attr, int& index) {
+status_t AudioSystem::getMinVolumeIndexForAttributes(const audio_attributes_t &attr, int &index)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioAttributesInternal attrAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_attributes_t_AudioAttributesInternal(attr));
-    int32_t indexAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getMinVolumeIndexForAttributes(attrAidl, &indexAidl)));
-    index = VALUE_OR_RETURN_STATUS(convertIntegral<int>(indexAidl));
-    return OK;
+    return aps->getMinVolumeIndexForAttributes(attr, index);
 }
 
-product_strategy_t AudioSystem::getStrategyForStream(audio_stream_type_t stream) {
+uint32_t AudioSystem::getStrategyForStream(audio_stream_type_t stream)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PRODUCT_STRATEGY_NONE;
-
-    auto result = [&]() -> ConversionResult<product_strategy_t> {
-        media::AudioStreamType streamAidl = VALUE_OR_RETURN(
-                legacy2aidl_audio_stream_type_t_AudioStreamType(stream));
-        int32_t resultAidl;
-        RETURN_IF_ERROR(statusTFromBinderStatus(
-                aps->getStrategyForStream(streamAidl, &resultAidl)));
-        return aidl2legacy_int32_t_product_strategy_t(resultAidl);
-    }();
-    return result.value_or(PRODUCT_STRATEGY_NONE);
+    return aps->getStrategyForStream(stream);
 }
 
-audio_devices_t AudioSystem::getDevicesForStream(audio_stream_type_t stream) {
+audio_devices_t AudioSystem::getDevicesForStream(audio_stream_type_t stream)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return AUDIO_DEVICE_NONE;
-
-    auto result = [&]() -> ConversionResult<audio_devices_t> {
-        media::AudioStreamType streamAidl = VALUE_OR_RETURN(
-                legacy2aidl_audio_stream_type_t_AudioStreamType(stream));
-        int32_t resultAidl;
-        RETURN_IF_ERROR(statusTFromBinderStatus(
-                aps->getDevicesForStream(streamAidl, &resultAidl)));
-        return aidl2legacy_int32_t_audio_devices_t(resultAidl);
-    }();
-    return result.value_or(AUDIO_DEVICE_NONE);
+    return aps->getDevicesForStream(stream);
 }
 
-status_t AudioSystem::getDevicesForAttributes(const AudioAttributes& aa,
-                                              AudioDeviceTypeAddrVector* devices) {
+status_t AudioSystem::getDevicesForAttributes(const AudioAttributes &aa,
+                                              AudioDeviceTypeAddrVector *devices) {
     if (devices == nullptr) {
         return BAD_VALUE;
     }
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioAttributesEx aaAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_AudioAttributes_AudioAttributesEx(aa));
-    std::vector<media::AudioDevice> retAidl;
-    RETURN_STATUS_IF_ERROR(
-            statusTFromBinderStatus(aps->getDevicesForAttributes(aaAidl, &retAidl)));
-    *devices = VALUE_OR_RETURN_STATUS(
-            convertContainer<AudioDeviceTypeAddrVector>(
-                    retAidl,
-                    aidl2legacy_AudioDeviceTypeAddress));
-    return OK;
+    return aps->getDevicesForAttributes(aa, devices);
 }
 
-audio_io_handle_t AudioSystem::getOutputForEffect(const effect_descriptor_t* desc) {
+audio_io_handle_t AudioSystem::getOutputForEffect(const effect_descriptor_t *desc)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     // FIXME change return type to status_t, and return PERMISSION_DENIED here
     if (aps == 0) return AUDIO_IO_HANDLE_NONE;
-
-    auto result = [&]() -> ConversionResult<audio_io_handle_t> {
-        media::EffectDescriptor descAidl = VALUE_OR_RETURN(
-                legacy2aidl_effect_descriptor_t_EffectDescriptor(*desc));
-        int32_t retAidl;
-        RETURN_IF_ERROR(
-                statusTFromBinderStatus(aps->getOutputForEffect(descAidl, &retAidl)));
-        return aidl2legacy_int32_t_audio_io_handle_t(retAidl);
-    }();
-
-    return result.value_or(AUDIO_IO_HANDLE_NONE);
+    return aps->getOutputForEffect(desc);
 }
 
-status_t AudioSystem::registerEffect(const effect_descriptor_t* desc,
-                                     audio_io_handle_t io,
-                                     product_strategy_t strategy,
-                                     audio_session_t session,
-                                     int id) {
+status_t AudioSystem::registerEffect(const effect_descriptor_t *desc,
+                                audio_io_handle_t io,
+                                uint32_t strategy,
+                                audio_session_t session,
+                                int id)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::EffectDescriptor descAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_effect_descriptor_t_EffectDescriptor(*desc));
-    int32_t ioAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_io_handle_t_int32_t(io));
-    int32_t strategyAidl = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_product_strategy_t(strategy));
-    int32_t sessionAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_session_t_int32_t(session));
-    int32_t idAidl = VALUE_OR_RETURN_STATUS(convertReinterpret<int32_t>(id));
-    return statusTFromBinderStatus(
-            aps->registerEffect(descAidl, ioAidl, strategyAidl, sessionAidl, idAidl));
+    return aps->registerEffect(desc, io, strategy, session, id);
 }
 
-status_t AudioSystem::unregisterEffect(int id) {
+status_t AudioSystem::unregisterEffect(int id)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t idAidl = VALUE_OR_RETURN_STATUS(convertReinterpret<int32_t>(id));
-    return statusTFromBinderStatus(
-            aps->unregisterEffect(idAidl));
+    return aps->unregisterEffect(id);
 }
 
-status_t AudioSystem::setEffectEnabled(int id, bool enabled) {
+status_t AudioSystem::setEffectEnabled(int id, bool enabled)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t idAidl = VALUE_OR_RETURN_STATUS(convertReinterpret<int32_t>(id));
-    return statusTFromBinderStatus(
-            aps->setEffectEnabled(idAidl, enabled));
+    return aps->setEffectEnabled(id, enabled);
 }
 
-status_t AudioSystem::moveEffectsToIo(const std::vector<int>& ids, audio_io_handle_t io) {
+status_t AudioSystem::moveEffectsToIo(const std::vector<int>& ids, audio_io_handle_t io)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    std::vector<int32_t> idsAidl = VALUE_OR_RETURN_STATUS(
-            convertContainer<std::vector<int32_t>>(ids, convertReinterpret<int32_t, int>));
-    int32_t ioAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_io_handle_t_int32_t(io));
-    return statusTFromBinderStatus(aps->moveEffectsToIo(idsAidl, ioAidl));
+    return aps->moveEffectsToIo(ids, io);
 }
 
-status_t AudioSystem::isStreamActive(audio_stream_type_t stream, bool* state, uint32_t inPastMs) {
+status_t AudioSystem::isStreamActive(audio_stream_type_t stream, bool* state, uint32_t inPastMs)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
     if (state == NULL) return BAD_VALUE;
-
-    media::AudioStreamType streamAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_stream_type_t_AudioStreamType(stream));
-    int32_t inPastMsAidl = VALUE_OR_RETURN_STATUS(convertIntegral<int32_t>(inPastMs));
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->isStreamActive(streamAidl, inPastMsAidl, state)));
-    return OK;
+    *state = aps->isStreamActive(stream, inPastMs);
+    return NO_ERROR;
 }
 
 status_t AudioSystem::isStreamActiveRemotely(audio_stream_type_t stream, bool* state,
-                                             uint32_t inPastMs) {
+        uint32_t inPastMs)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
     if (state == NULL) return BAD_VALUE;
-
-    media::AudioStreamType streamAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_stream_type_t_AudioStreamType(stream));
-    int32_t inPastMsAidl = VALUE_OR_RETURN_STATUS(convertIntegral<int32_t>(inPastMs));
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->isStreamActiveRemotely(streamAidl, inPastMsAidl, state)));
-    return OK;
+    *state = aps->isStreamActiveRemotely(stream, inPastMs);
+    return NO_ERROR;
 }
 
-status_t AudioSystem::isSourceActive(audio_source_t stream, bool* state) {
+status_t AudioSystem::isSourceActive(audio_source_t stream, bool* state)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
     if (state == NULL) return BAD_VALUE;
-
-    media::AudioSourceType streamAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_source_t_AudioSourceType(stream));
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->isSourceActive(streamAidl, state)));
-    return OK;
+    *state = aps->isSourceActive(stream);
+    return NO_ERROR;
 }
 
-uint32_t AudioSystem::getPrimaryOutputSamplingRate() {
+uint32_t AudioSystem::getPrimaryOutputSamplingRate()
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return 0;
     return af->getPrimaryOutputSamplingRate();
 }
 
-size_t AudioSystem::getPrimaryOutputFrameCount() {
+size_t AudioSystem::getPrimaryOutputFrameCount()
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return 0;
     return af->getPrimaryOutputFrameCount();
 }
 
-status_t AudioSystem::setLowRamDevice(bool isLowRamDevice, int64_t totalMemory) {
+status_t AudioSystem::setLowRamDevice(bool isLowRamDevice, int64_t totalMemory)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     return af->setLowRamDevice(isLowRamDevice, totalMemory);
 }
 
-void AudioSystem::clearAudioConfigCache() {
+void AudioSystem::clearAudioConfigCache()
+{
     // called by restoreTrack_l(), which needs new IAudioFlinger and IAudioPolicyService instances
     ALOGV("clearAudioConfigCache()");
     {
@@ -1433,152 +1160,74 @@ void AudioSystem::clearAudioConfigCache() {
 status_t AudioSystem::setSupportedSystemUsages(const std::vector<audio_usage_t>& systemUsages) {
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == nullptr) return PERMISSION_DENIED;
-
-    std::vector<media::AudioUsage> systemUsagesAidl = VALUE_OR_RETURN_STATUS(
-            convertContainer<std::vector<media::AudioUsage>>(systemUsages,
-                                                             legacy2aidl_audio_usage_t_AudioUsage));
-    return statusTFromBinderStatus(aps->setSupportedSystemUsages(systemUsagesAidl));
+    return aps->setSupportedSystemUsages(systemUsages);
 }
 
-status_t AudioSystem::setAllowedCapturePolicy(uid_t uid, audio_flags_mask_t capturePolicy) {
+status_t AudioSystem::setAllowedCapturePolicy(uid_t uid, audio_flags_mask_t flags) {
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == nullptr) return PERMISSION_DENIED;
-
-    int32_t uidAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_uid_t_int32_t(uid));
-    int32_t capturePolicyAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_flags_mask_t_int32_t_mask(capturePolicy));
-    return statusTFromBinderStatus(aps->setAllowedCapturePolicy(uidAidl, capturePolicyAidl));
+    return aps->setAllowedCapturePolicy(uid, flags);
 }
 
-audio_offload_mode_t AudioSystem::getOffloadSupport(const audio_offload_info_t& info) {
-    ALOGV("%s", __func__);
+bool AudioSystem::isOffloadSupported(const audio_offload_info_t& info)
+{
+    ALOGV("isOffloadSupported()");
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
-    if (aps == 0) return AUDIO_OFFLOAD_NOT_SUPPORTED;
-
-    auto result = [&]() -> ConversionResult<audio_offload_mode_t> {
-        media::AudioOffloadInfo infoAidl = VALUE_OR_RETURN(
-                legacy2aidl_audio_offload_info_t_AudioOffloadInfo(info));
-        media::AudioOffloadMode retAidl;
-        RETURN_IF_ERROR(
-                statusTFromBinderStatus(aps->getOffloadSupport(infoAidl, &retAidl)));
-        return aidl2legacy_AudioOffloadMode_audio_offload_mode_t(retAidl);
-    }();
-
-    return result.value_or(static_cast<audio_offload_mode_t>(0));
+    if (aps == 0) return false;
+    return aps->isOffloadSupported(info);
 }
 
 status_t AudioSystem::listAudioPorts(audio_port_role_t role,
                                      audio_port_type_t type,
-                                     unsigned int* num_ports,
-                                     struct audio_port_v7* ports,
-                                     unsigned int* generation) {
-    if (num_ports == nullptr || (*num_ports != 0 && ports == nullptr) ||
-        generation == nullptr) {
-        return BAD_VALUE;
-    }
-
+                                     unsigned int *num_ports,
+                                     struct audio_port *ports,
+                                     unsigned int *generation)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioPortRole roleAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_port_role_t_AudioPortRole(role));
-    media::AudioPortType typeAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_port_type_t_AudioPortType(type));
-    media::Int numPortsAidl;
-    numPortsAidl.value = VALUE_OR_RETURN_STATUS(convertIntegral<int32_t>(*num_ports));
-    std::vector<media::AudioPort> portsAidl;
-    int32_t generationAidl;
-
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->listAudioPorts(roleAidl, typeAidl, &numPortsAidl, &portsAidl, &generationAidl)));
-    *num_ports = VALUE_OR_RETURN_STATUS(convertIntegral<unsigned int>(numPortsAidl.value));
-    *generation = VALUE_OR_RETURN_STATUS(convertIntegral<unsigned int>(generationAidl));
-    RETURN_STATUS_IF_ERROR(convertRange(portsAidl.begin(), portsAidl.end(), ports,
-                                        aidl2legacy_AudioPort_audio_port_v7));
-    return OK;
+    return aps->listAudioPorts(role, type, num_ports, ports, generation);
 }
 
-status_t AudioSystem::getAudioPort(struct audio_port_v7* port) {
-    if (port == nullptr) {
-        return BAD_VALUE;
-    }
-
+status_t AudioSystem::getAudioPort(struct audio_port *port)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioPort portAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_port_v7_AudioPort(*port));
-    RETURN_STATUS_IF_ERROR(
-            statusTFromBinderStatus(aps->getAudioPort(portAidl, &portAidl)));
-    *port = VALUE_OR_RETURN_STATUS(aidl2legacy_AudioPort_audio_port_v7(portAidl));
-    return OK;
+    return aps->getAudioPort(port);
 }
 
-status_t AudioSystem::createAudioPatch(const struct audio_patch* patch,
-                                       audio_patch_handle_t* handle) {
-    if (patch == nullptr || handle == nullptr) {
-        return BAD_VALUE;
-    }
-
+status_t AudioSystem::createAudioPatch(const struct audio_patch *patch,
+                                   audio_patch_handle_t *handle)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioPatch patchAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_patch_AudioPatch(*patch));
-    int32_t handleAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_patch_handle_t_int32_t(*handle));
-    RETURN_STATUS_IF_ERROR(
-            statusTFromBinderStatus(aps->createAudioPatch(patchAidl, handleAidl, &handleAidl)));
-    *handle = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_audio_patch_handle_t(handleAidl));
-    return OK;
+    return aps->createAudioPatch(patch, handle);
 }
 
-status_t AudioSystem::releaseAudioPatch(audio_patch_handle_t handle) {
+status_t AudioSystem::releaseAudioPatch(audio_patch_handle_t handle)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t handleAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_patch_handle_t_int32_t(handle));
-    return statusTFromBinderStatus(aps->releaseAudioPatch(handleAidl));
+    return aps->releaseAudioPatch(handle);
 }
 
-status_t AudioSystem::listAudioPatches(unsigned int* num_patches,
-                                       struct audio_patch* patches,
-                                       unsigned int* generation) {
-    if (num_patches == nullptr || (*num_patches != 0 && patches == nullptr) ||
-        generation == nullptr) {
-        return BAD_VALUE;
-    }
-
+status_t AudioSystem::listAudioPatches(unsigned int *num_patches,
+                                  struct audio_patch *patches,
+                                  unsigned int *generation)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-
-    media::Int numPatchesAidl;
-    numPatchesAidl.value = VALUE_OR_RETURN_STATUS(convertIntegral<int32_t>(*num_patches));
-    std::vector<media::AudioPatch> patchesAidl;
-    int32_t generationAidl;
-
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->listAudioPatches(&numPatchesAidl, &patchesAidl, &generationAidl)));
-    *num_patches = VALUE_OR_RETURN_STATUS(convertIntegral<unsigned int>(numPatchesAidl.value));
-    *generation = VALUE_OR_RETURN_STATUS(convertIntegral<unsigned int>(generationAidl));
-    RETURN_STATUS_IF_ERROR(convertRange(patchesAidl.begin(), patchesAidl.end(), patches,
-                                        aidl2legacy_AudioPatch_audio_patch));
-    return OK;
+    return aps->listAudioPatches(num_patches, patches, generation);
 }
 
-status_t AudioSystem::setAudioPortConfig(const struct audio_port_config* config) {
-    if (config == nullptr) {
-        return BAD_VALUE;
-    }
-
+status_t AudioSystem::setAudioPortConfig(const struct audio_port_config *config)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioPortConfig configAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_port_config_AudioPortConfig(*config));
-    return statusTFromBinderStatus(aps->setAudioPortConfig(configAidl));
+    return aps->setAudioPortConfig(config);
 }
 
-status_t AudioSystem::addAudioPortCallback(const sp<AudioPortCallback>& callback) {
+status_t AudioSystem::addAudioPortCallback(const sp<AudioPortCallback>& callback)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
 
@@ -1594,7 +1243,8 @@ status_t AudioSystem::addAudioPortCallback(const sp<AudioPortCallback>& callback
 }
 
 /*static*/
-status_t AudioSystem::removeAudioPortCallback(const sp<AudioPortCallback>& callback) {
+status_t AudioSystem::removeAudioPortCallback(const sp<AudioPortCallback>& callback)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
 
@@ -1609,7 +1259,8 @@ status_t AudioSystem::removeAudioPortCallback(const sp<AudioPortCallback>& callb
     return (ret < 0) ? INVALID_OPERATION : NO_ERROR;
 }
 
-status_t AudioSystem::addAudioVolumeGroupCallback(const sp<AudioVolumeGroupCallback>& callback) {
+status_t AudioSystem::addAudioVolumeGroupCallback(const sp<AudioVolumeGroupCallback>& callback)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
 
@@ -1624,7 +1275,8 @@ status_t AudioSystem::addAudioVolumeGroupCallback(const sp<AudioVolumeGroupCallb
     return (ret < 0) ? INVALID_OPERATION : NO_ERROR;
 }
 
-status_t AudioSystem::removeAudioVolumeGroupCallback(const sp<AudioVolumeGroupCallback>& callback) {
+status_t AudioSystem::removeAudioVolumeGroupCallback(const sp<AudioVolumeGroupCallback>& callback)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
 
@@ -1641,7 +1293,8 @@ status_t AudioSystem::removeAudioVolumeGroupCallback(const sp<AudioVolumeGroupCa
 
 status_t AudioSystem::addAudioDeviceCallback(
         const wp<AudioDeviceCallback>& callback, audio_io_handle_t audioIo,
-        audio_port_handle_t portId) {
+        audio_port_handle_t portId)
+{
     const sp<AudioFlingerClient> afc = getAudioFlingerClient();
     if (afc == 0) {
         return NO_INIT;
@@ -1658,7 +1311,8 @@ status_t AudioSystem::addAudioDeviceCallback(
 
 status_t AudioSystem::removeAudioDeviceCallback(
         const wp<AudioDeviceCallback>& callback, audio_io_handle_t audioIo,
-        audio_port_handle_t portId) {
+        audio_port_handle_t portId)
+{
     const sp<AudioFlingerClient> afc = getAudioFlingerClient();
     if (afc == 0) {
         return NO_INIT;
@@ -1666,7 +1320,8 @@ status_t AudioSystem::removeAudioDeviceCallback(
     return afc->removeAudioDeviceCallback(callback, audioIo, portId);
 }
 
-audio_port_handle_t AudioSystem::getDeviceIdForIo(audio_io_handle_t audioIo) {
+audio_port_handle_t AudioSystem::getDeviceIdForIo(audio_io_handle_t audioIo)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     const sp<AudioIoDescriptor> desc = getIoDescriptor(audioIo);
@@ -1676,354 +1331,224 @@ audio_port_handle_t AudioSystem::getDeviceIdForIo(audio_io_handle_t audioIo) {
     return desc->getDeviceId();
 }
 
-status_t AudioSystem::acquireSoundTriggerSession(audio_session_t* session,
-                                                 audio_io_handle_t* ioHandle,
-                                                 audio_devices_t* device) {
-    if (session == nullptr || ioHandle == nullptr || device == nullptr) {
-        return BAD_VALUE;
-    }
+status_t AudioSystem::acquireSoundTriggerSession(audio_session_t *session,
+                                       audio_io_handle_t *ioHandle,
+                                       audio_devices_t *device)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::SoundTriggerSession retAidl;
-    RETURN_STATUS_IF_ERROR(
-            statusTFromBinderStatus(aps->acquireSoundTriggerSession(&retAidl)));
-    *session = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_audio_session_t(retAidl.session));
-    *ioHandle = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_audio_io_handle_t(retAidl.ioHandle));
-    *device = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_audio_devices_t(retAidl.device));
-    return OK;
+    return aps->acquireSoundTriggerSession(session, ioHandle, device);
 }
 
-status_t AudioSystem::releaseSoundTriggerSession(audio_session_t session) {
+status_t AudioSystem::releaseSoundTriggerSession(audio_session_t session)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t sessionAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_session_t_int32_t(session));
-    return statusTFromBinderStatus(aps->releaseSoundTriggerSession(sessionAidl));
+    return aps->releaseSoundTriggerSession(session);
 }
 
-audio_mode_t AudioSystem::getPhoneState() {
+audio_mode_t AudioSystem::getPhoneState()
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return AUDIO_MODE_INVALID;
-
-    auto result = [&]() -> ConversionResult<audio_mode_t> {
-        media::AudioMode retAidl;
-        RETURN_IF_ERROR(statusTFromBinderStatus(aps->getPhoneState(&retAidl)));
-        return aidl2legacy_AudioMode_audio_mode_t(retAidl);
-    }();
-
-    return result.value_or(AUDIO_MODE_INVALID);
+    return aps->getPhoneState();
 }
 
-status_t AudioSystem::registerPolicyMixes(const Vector<AudioMix>& mixes, bool registration) {
+status_t AudioSystem::registerPolicyMixes(const Vector<AudioMix>& mixes, bool registration)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    size_t mixesSize = std::min(mixes.size(), size_t{MAX_MIXES_PER_POLICY});
-    std::vector<media::AudioMix> mixesAidl;
-    RETURN_STATUS_IF_ERROR(
-            convertRange(mixes.begin(), mixes.begin() + mixesSize, std::back_inserter(mixesAidl),
-                         legacy2aidl_AudioMix));
-    return statusTFromBinderStatus(aps->registerPolicyMixes(mixesAidl, registration));
+    return aps->registerPolicyMixes(mixes, registration);
 }
 
-status_t AudioSystem::setUidDeviceAffinities(uid_t uid, const AudioDeviceTypeAddrVector& devices) {
+status_t AudioSystem::setUidDeviceAffinities(uid_t uid, const Vector<AudioDeviceTypeAddr>& devices)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t uidAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_uid_t_int32_t(uid));
-    std::vector<media::AudioDevice> devicesAidl = VALUE_OR_RETURN_STATUS(
-            convertContainer<std::vector<media::AudioDevice>>(devices,
-                                                              legacy2aidl_AudioDeviceTypeAddress));
-    return statusTFromBinderStatus(aps->setUidDeviceAffinities(uidAidl, devicesAidl));
+    return aps->setUidDeviceAffinities(uid, devices);
 }
 
 status_t AudioSystem::removeUidDeviceAffinities(uid_t uid) {
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t uidAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_uid_t_int32_t(uid));
-    return statusTFromBinderStatus(aps->removeUidDeviceAffinities(uidAidl));
+    return aps->removeUidDeviceAffinities(uid);
 }
 
 status_t AudioSystem::setUserIdDeviceAffinities(int userId,
-                                                const AudioDeviceTypeAddrVector& devices) {
+                                                const Vector<AudioDeviceTypeAddr>& devices)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t userIdAidl = VALUE_OR_RETURN_STATUS(convertReinterpret<int32_t>(userId));
-    std::vector<media::AudioDevice> devicesAidl = VALUE_OR_RETURN_STATUS(
-            convertContainer<std::vector<media::AudioDevice>>(devices,
-                                                              legacy2aidl_AudioDeviceTypeAddress));
-    return statusTFromBinderStatus(
-            aps->setUserIdDeviceAffinities(userIdAidl, devicesAidl));
+    return aps->setUserIdDeviceAffinities(userId, devices);
 }
 
-status_t AudioSystem::removeUserIdDeviceAffinities(int userId) {
+status_t AudioSystem::removeUserIdDeviceAffinities(int userId)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-    int32_t userIdAidl = VALUE_OR_RETURN_STATUS(convertReinterpret<int32_t>(userId));
-    return statusTFromBinderStatus(aps->removeUserIdDeviceAffinities(userIdAidl));
+    return aps->removeUserIdDeviceAffinities(userId);
 }
 
-status_t AudioSystem::startAudioSource(const struct audio_port_config* source,
-                                       const audio_attributes_t* attributes,
-                                       audio_port_handle_t* portId) {
-    if (source == nullptr || attributes == nullptr || portId == nullptr) {
-        return BAD_VALUE;
-    }
+status_t AudioSystem::startAudioSource(const struct audio_port_config *source,
+                                       const audio_attributes_t *attributes,
+                                       audio_port_handle_t *portId)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioPortConfig sourceAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_port_config_AudioPortConfig(*source));
-    media::AudioAttributesInternal attributesAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_attributes_t_AudioAttributesInternal(*attributes));
-    int32_t portIdAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->startAudioSource(sourceAidl, attributesAidl, &portIdAidl)));
-    *portId = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_audio_port_handle_t(portIdAidl));
-    return OK;
+    return aps->startAudioSource(source, attributes, portId);
 }
 
-status_t AudioSystem::stopAudioSource(audio_port_handle_t portId) {
+status_t AudioSystem::stopAudioSource(audio_port_handle_t portId)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t portIdAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_audio_port_handle_t_int32_t(portId));
-    return statusTFromBinderStatus(aps->stopAudioSource(portIdAidl));
+    return aps->stopAudioSource(portId);
 }
 
-status_t AudioSystem::setMasterMono(bool mono) {
+status_t AudioSystem::setMasterMono(bool mono)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-    return statusTFromBinderStatus(aps->setMasterMono(mono));
+    return aps->setMasterMono(mono);
 }
 
-status_t AudioSystem::getMasterMono(bool* mono) {
-    if (mono == nullptr) {
-        return BAD_VALUE;
-    }
+status_t AudioSystem::getMasterMono(bool *mono)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-    return statusTFromBinderStatus(aps->getMasterMono(mono));
+    return aps->getMasterMono(mono);
 }
 
-status_t AudioSystem::setMasterBalance(float balance) {
+status_t AudioSystem::setMasterBalance(float balance)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     return af->setMasterBalance(balance);
 }
 
-status_t AudioSystem::getMasterBalance(float* balance) {
+status_t AudioSystem::getMasterBalance(float *balance)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     return af->getMasterBalance(balance);
 }
 
-float
-AudioSystem::getStreamVolumeDB(audio_stream_type_t stream, int index, audio_devices_t device) {
+float AudioSystem::getStreamVolumeDB(audio_stream_type_t stream, int index, audio_devices_t device)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return NAN;
-
-    auto result = [&]() -> ConversionResult<float> {
-        media::AudioStreamType streamAidl = VALUE_OR_RETURN(
-                legacy2aidl_audio_stream_type_t_AudioStreamType(stream));
-        int32_t indexAidl = VALUE_OR_RETURN(convertIntegral<int32_t>(index));
-        int32_t deviceAidl = VALUE_OR_RETURN(legacy2aidl_audio_devices_t_int32_t(device));
-        float retAidl;
-        RETURN_IF_ERROR(statusTFromBinderStatus(
-                aps->getStreamVolumeDB(streamAidl, indexAidl, deviceAidl, &retAidl)));
-        return retAidl;
-    }();
-    return result.value_or(NAN);
+    return aps->getStreamVolumeDB(stream, index, device);
 }
 
-status_t AudioSystem::getMicrophones(std::vector<media::MicrophoneInfo>* microphones) {
+status_t AudioSystem::getMicrophones(std::vector<media::MicrophoneInfo> *microphones)
+{
     const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
     if (af == 0) return PERMISSION_DENIED;
     return af->getMicrophones(microphones);
 }
 
 status_t AudioSystem::setAudioHalPids(const std::vector<pid_t>& pids) {
-    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
-    if (af == nullptr) return PERMISSION_DENIED;
-    return af->setAudioHalPids(pids);
+  const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
+  if (af == nullptr) return PERMISSION_DENIED;
+  return af->setAudioHalPids(pids);
 }
 
-status_t AudioSystem::getSurroundFormats(unsigned int* numSurroundFormats,
-                                         audio_format_t* surroundFormats,
-                                         bool* surroundFormatsEnabled) {
-    if (numSurroundFormats == nullptr || (*numSurroundFormats != 0 &&
-                                          (surroundFormats == nullptr ||
-                                           surroundFormatsEnabled == nullptr))) {
-        return BAD_VALUE;
-    }
-
+status_t AudioSystem::getSurroundFormats(unsigned int *numSurroundFormats,
+                                         audio_format_t *surroundFormats,
+                                         bool *surroundFormatsEnabled,
+                                         bool reported)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-    media::Int numSurroundFormatsAidl;
-    numSurroundFormatsAidl.value =
-            VALUE_OR_RETURN_STATUS(convertIntegral<int32_t>(*numSurroundFormats));
-    std::vector<media::audio::common::AudioFormat> surroundFormatsAidl;
-    std::vector<bool> surroundFormatsEnabledAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getSurroundFormats(&numSurroundFormatsAidl, &surroundFormatsAidl,
-                                    &surroundFormatsEnabledAidl)));
-
-    *numSurroundFormats = VALUE_OR_RETURN_STATUS(
-            convertIntegral<unsigned int>(numSurroundFormatsAidl.value));
-    RETURN_STATUS_IF_ERROR(
-            convertRange(surroundFormatsAidl.begin(), surroundFormatsAidl.end(), surroundFormats,
-                         aidl2legacy_AudioFormat_audio_format_t));
-    std::copy(surroundFormatsEnabledAidl.begin(), surroundFormatsEnabledAidl.end(),
-            surroundFormatsEnabled);
-    return OK;
+    return aps->getSurroundFormats(
+            numSurroundFormats, surroundFormats, surroundFormatsEnabled, reported);
 }
 
-status_t AudioSystem::getReportedSurroundFormats(unsigned int* numSurroundFormats,
-                                                 audio_format_t* surroundFormats) {
-    if (numSurroundFormats == nullptr || (*numSurroundFormats != 0 && surroundFormats == nullptr)) {
-        return BAD_VALUE;
-    }
-
+status_t AudioSystem::setSurroundFormatEnabled(audio_format_t audioFormat, bool enabled)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-    media::Int numSurroundFormatsAidl;
-    numSurroundFormatsAidl.value =
-            VALUE_OR_RETURN_STATUS(convertIntegral<int32_t>(*numSurroundFormats));
-    std::vector<media::audio::common::AudioFormat> surroundFormatsAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getReportedSurroundFormats(&numSurroundFormatsAidl, &surroundFormatsAidl)));
-
-    *numSurroundFormats = VALUE_OR_RETURN_STATUS(
-            convertIntegral<unsigned int>(numSurroundFormatsAidl.value));
-    RETURN_STATUS_IF_ERROR(
-            convertRange(surroundFormatsAidl.begin(), surroundFormatsAidl.end(), surroundFormats,
-                         aidl2legacy_AudioFormat_audio_format_t));
-    return OK;
+    return aps->setSurroundFormatEnabled(audioFormat, enabled);
 }
 
-status_t AudioSystem::setSurroundFormatEnabled(audio_format_t audioFormat, bool enabled) {
-    const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+status_t AudioSystem::setAssistantUid(uid_t uid)
+{
+    const sp <IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
 
-    media::audio::common::AudioFormat audioFormatAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_format_t_AudioFormat(audioFormat));
-    return statusTFromBinderStatus(
-            aps->setSurroundFormatEnabled(audioFormatAidl, enabled));
+    return aps->setAssistantUid(uid);
 }
 
-status_t AudioSystem::setAssistantUid(uid_t uid) {
-    const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+status_t AudioSystem::setA11yServicesUids(const std::vector<uid_t>& uids)
+{
+    const sp <IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
 
-    int32_t uidAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_uid_t_int32_t(uid));
-    return statusTFromBinderStatus(aps->setAssistantUid(uidAidl));
+    return aps->setA11yServicesUids(uids);
 }
 
-status_t AudioSystem::setHotwordDetectionServiceUid(uid_t uid) {
-    const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
+status_t AudioSystem::setCurrentImeUid(uid_t uid)
+{
+    const sp <IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
 
-    int32_t uidAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_uid_t_int32_t(uid));
-    return statusTFromBinderStatus(aps->setHotwordDetectionServiceUid(uidAidl));
+    return aps->setCurrentImeUid(uid);
 }
 
-status_t AudioSystem::setA11yServicesUids(const std::vector<uid_t>& uids) {
-    const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
-    if (aps == 0) return PERMISSION_DENIED;
-
-    std::vector<int32_t> uidsAidl = VALUE_OR_RETURN_STATUS(
-            convertContainer<std::vector<int32_t>>(uids, legacy2aidl_uid_t_int32_t));
-    return statusTFromBinderStatus(aps->setA11yServicesUids(uidsAidl));
-}
-
-status_t AudioSystem::setCurrentImeUid(uid_t uid) {
-    const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
-    if (aps == 0) return PERMISSION_DENIED;
-
-    int32_t uidAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_uid_t_int32_t(uid));
-    return statusTFromBinderStatus(aps->setCurrentImeUid(uidAidl));
-}
-
-bool AudioSystem::isHapticPlaybackSupported() {
+bool AudioSystem::isHapticPlaybackSupported()
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return false;
-
-    auto result = [&]() -> ConversionResult<bool> {
-        bool retVal;
-        RETURN_IF_ERROR(
-                statusTFromBinderStatus(aps->isHapticPlaybackSupported(&retVal)));
-        return retVal;
-    }();
-    return result.value_or(false);
+    return aps->isHapticPlaybackSupported();
 }
 
 status_t AudioSystem::getHwOffloadEncodingFormatsSupportedForA2DP(
-        std::vector<audio_format_t>* formats) {
-    if (formats == nullptr) {
-        return BAD_VALUE;
-    }
-
-    const sp<IAudioPolicyService>
-            & aps = AudioSystem::get_audio_policy_service();
+                                std::vector<audio_format_t> *formats) {
+    const sp <IAudioPolicyService>
+        & aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    std::vector<media::audio::common::AudioFormat> formatsAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getHwOffloadEncodingFormatsSupportedForA2DP(&formatsAidl)));
-    *formats = VALUE_OR_RETURN_STATUS(
-            convertContainer<std::vector<audio_format_t>>(formatsAidl,
-                                                          aidl2legacy_AudioFormat_audio_format_t));
-    return OK;
+    return aps->getHwOffloadEncodingFormatsSupportedForA2DP(formats);
 }
 
-status_t AudioSystem::listAudioProductStrategies(AudioProductStrategyVector& strategies) {
+status_t AudioSystem::listAudioProductStrategies(AudioProductStrategyVector &strategies)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    std::vector<media::AudioProductStrategy> strategiesAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->listAudioProductStrategies(&strategiesAidl)));
-    strategies = VALUE_OR_RETURN_STATUS(
-            convertContainer<AudioProductStrategyVector>(strategiesAidl,
-                                                         aidl2legacy_AudioProductStrategy));
-    return OK;
+    return aps->listAudioProductStrategies(strategies);
 }
 
-audio_attributes_t AudioSystem::streamTypeToAttributes(audio_stream_type_t stream) {
+audio_attributes_t AudioSystem::streamTypeToAttributes(audio_stream_type_t stream)
+{
     AudioProductStrategyVector strategies;
     listAudioProductStrategies(strategies);
-    for (const auto& strategy : strategies) {
+    for (const auto &strategy : strategies) {
         auto attrVect = strategy.getAudioAttributes();
-        auto iter = std::find_if(begin(attrVect), end(attrVect), [&stream](const auto& attributes) {
-            return attributes.getStreamType() == stream;
-        });
+        auto iter = std::find_if(begin(attrVect), end(attrVect), [&stream](const auto &attributes) {
+                         return attributes.getStreamType() == stream; });
         if (iter != end(attrVect)) {
             return iter->getAttributes();
         }
     }
-    ALOGE("invalid stream type %s when converting to attributes", toString(stream).c_str());
+    ALOGE("invalid stream type %s when converting to attributes",  toString(stream).c_str());
     return AUDIO_ATTRIBUTES_INITIALIZER;
 }
 
-audio_stream_type_t AudioSystem::attributesToStreamType(const audio_attributes_t& attr) {
+audio_stream_type_t AudioSystem::attributesToStreamType(const audio_attributes_t &attr)
+{
     product_strategy_t psId;
     status_t ret = AudioSystem::getProductStrategyFromAudioAttributes(AudioAttributes(attr), psId);
     if (ret != NO_ERROR) {
-        ALOGE("no strategy found for attributes %s", toString(attr).c_str());
+        ALOGE("no strategy found for attributes %s",  toString(attr).c_str());
         return AUDIO_STREAM_MUSIC;
     }
     AudioProductStrategyVector strategies;
     listAudioProductStrategies(strategies);
-    for (const auto& strategy : strategies) {
+    for (const auto &strategy : strategies) {
         if (strategy.getId() == psId) {
             auto attrVect = strategy.getAudioAttributes();
-            auto iter = std::find_if(begin(attrVect), end(attrVect), [&attr](const auto& refAttr) {
-                return AudioProductStrategy::attributesMatches(
-                        refAttr.getAttributes(), attr);
-            });
+            auto iter = std::find_if(begin(attrVect), end(attrVect), [&attr](const auto &refAttr) {
+                             return AudioProductStrategy::attributesMatches(
+                                 refAttr.getAttributes(), attr); });
             if (iter != end(attrVect)) {
                 return iter->getStreamType();
             }
@@ -2034,274 +1559,125 @@ audio_stream_type_t AudioSystem::attributesToStreamType(const audio_attributes_t
             // virtual source is not expected to have an associated product strategy
             break;
         default:
-            ALOGE("invalid attributes %s when converting to stream", toString(attr).c_str());
+            ALOGE("invalid attributes %s when converting to stream",  toString(attr).c_str());
             break;
     }
     return AUDIO_STREAM_MUSIC;
 }
 
-status_t AudioSystem::getProductStrategyFromAudioAttributes(const AudioAttributes& aa,
-                                                            product_strategy_t& productStrategy,
-                                                            bool fallbackOnDefault) {
+status_t AudioSystem::getProductStrategyFromAudioAttributes(const AudioAttributes &aa,
+                                                            product_strategy_t &productStrategy)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioAttributesEx aaAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_AudioAttributes_AudioAttributesEx(aa));
-    int32_t productStrategyAidl;
-
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getProductStrategyFromAudioAttributes(aaAidl, fallbackOnDefault,
-            &productStrategyAidl)));
-    productStrategy = VALUE_OR_RETURN_STATUS(
-            aidl2legacy_int32_t_product_strategy_t(productStrategyAidl));
-    return OK;
+    return aps->getProductStrategyFromAudioAttributes(aa,productStrategy);
 }
 
-status_t AudioSystem::listAudioVolumeGroups(AudioVolumeGroupVector& groups) {
+status_t AudioSystem::listAudioVolumeGroups(AudioVolumeGroupVector &groups)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    std::vector<media::AudioVolumeGroup> groupsAidl;
-    RETURN_STATUS_IF_ERROR(
-            statusTFromBinderStatus(aps->listAudioVolumeGroups(&groupsAidl)));
-    groups = VALUE_OR_RETURN_STATUS(
-            convertContainer<AudioVolumeGroupVector>(groupsAidl, aidl2legacy_AudioVolumeGroup));
-    return OK;
+    return aps->listAudioVolumeGroups(groups);
 }
 
-status_t AudioSystem::getVolumeGroupFromAudioAttributes(const AudioAttributes& aa,
-                                                        volume_group_t& volumeGroup,
-                                                        bool fallbackOnDefault) {
+status_t AudioSystem::getVolumeGroupFromAudioAttributes(const AudioAttributes &aa,
+                                                        volume_group_t &volumeGroup)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-
-    media::AudioAttributesEx aaAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_AudioAttributes_AudioAttributesEx(aa));
-    int32_t volumeGroupAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getVolumeGroupFromAudioAttributes(aaAidl, fallbackOnDefault, &volumeGroupAidl)));
-    volumeGroup = VALUE_OR_RETURN_STATUS(aidl2legacy_int32_t_volume_group_t(volumeGroupAidl));
-    return OK;
+    return aps->getVolumeGroupFromAudioAttributes(aa, volumeGroup);
 }
 
-status_t AudioSystem::setRttEnabled(bool enabled) {
+status_t AudioSystem::setRttEnabled(bool enabled)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return PERMISSION_DENIED;
-    return statusTFromBinderStatus(aps->setRttEnabled(enabled));
+    return aps->setRttEnabled(enabled);
 }
 
-bool AudioSystem::isCallScreenModeSupported() {
+bool AudioSystem::isCallScreenModeSupported()
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) return false;
-
-    auto result = [&]() -> ConversionResult<bool> {
-        bool retAidl;
-        RETURN_IF_ERROR(
-                statusTFromBinderStatus(aps->isCallScreenModeSupported(&retAidl)));
-        return retAidl;
-    }();
-    return result.value_or(false);
+    return aps->isCallScreenModeSupported();
 }
 
-status_t AudioSystem::setDevicesRoleForStrategy(product_strategy_t strategy,
-                                                device_role_t role,
-                                                const AudioDeviceTypeAddrVector& devices) {
+status_t AudioSystem::setPreferredDeviceForStrategy(product_strategy_t strategy,
+                                                    const AudioDeviceTypeAddr &device)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) {
         return PERMISSION_DENIED;
     }
-
-    int32_t strategyAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_product_strategy_t_int32_t(strategy));
-    media::DeviceRole roleAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_device_role_t_DeviceRole(role));
-    std::vector<media::AudioDevice> devicesAidl = VALUE_OR_RETURN_STATUS(
-            convertContainer<std::vector<media::AudioDevice>>(devices,
-                                                              legacy2aidl_AudioDeviceTypeAddress));
-    return statusTFromBinderStatus(
-            aps->setDevicesRoleForStrategy(strategyAidl, roleAidl, devicesAidl));
+    return aps->setPreferredDeviceForStrategy(strategy, device);
 }
 
-status_t
-AudioSystem::removeDevicesRoleForStrategy(product_strategy_t strategy, device_role_t role) {
+status_t AudioSystem::removePreferredDeviceForStrategy(product_strategy_t strategy)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) {
         return PERMISSION_DENIED;
     }
-    int32_t strategyAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_product_strategy_t_int32_t(strategy));
-    media::DeviceRole roleAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_device_role_t_DeviceRole(role));
-    return statusTFromBinderStatus(
-            aps->removeDevicesRoleForStrategy(strategyAidl, roleAidl));
+    return aps->removePreferredDeviceForStrategy(strategy);
 }
 
-status_t AudioSystem::getDevicesForRoleAndStrategy(product_strategy_t strategy,
-                                                   device_role_t role,
-                                                   AudioDeviceTypeAddrVector& devices) {
+status_t AudioSystem::getPreferredDeviceForStrategy(product_strategy_t strategy,
+        AudioDeviceTypeAddr &device)
+{
     const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
     if (aps == 0) {
         return PERMISSION_DENIED;
     }
-    int32_t strategyAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_product_strategy_t_int32_t(strategy));
-    media::DeviceRole roleAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_device_role_t_DeviceRole(role));
-    std::vector<media::AudioDevice> devicesAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getDevicesForRoleAndStrategy(strategyAidl, roleAidl, &devicesAidl)));
-    devices = VALUE_OR_RETURN_STATUS(
-            convertContainer<AudioDeviceTypeAddrVector>(devicesAidl,
-                                                        aidl2legacy_AudioDeviceTypeAddress));
-    return OK;
-}
-
-status_t AudioSystem::setDevicesRoleForCapturePreset(audio_source_t audioSource,
-                                                     device_role_t role,
-                                                     const AudioDeviceTypeAddrVector& devices) {
-    const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
-    if (aps == 0) {
-        return PERMISSION_DENIED;
-    }
-
-    media::AudioSourceType audioSourceAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_source_t_AudioSourceType(audioSource));
-    media::DeviceRole roleAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_device_role_t_DeviceRole(role));
-    std::vector<media::AudioDevice> devicesAidl = VALUE_OR_RETURN_STATUS(
-            convertContainer<std::vector<media::AudioDevice>>(devices,
-                                                              legacy2aidl_AudioDeviceTypeAddress));
-    return statusTFromBinderStatus(
-            aps->setDevicesRoleForCapturePreset(audioSourceAidl, roleAidl, devicesAidl));
-}
-
-status_t AudioSystem::addDevicesRoleForCapturePreset(audio_source_t audioSource,
-                                                     device_role_t role,
-                                                     const AudioDeviceTypeAddrVector& devices) {
-    const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
-    if (aps == 0) {
-        return PERMISSION_DENIED;
-    }
-    media::AudioSourceType audioSourceAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_source_t_AudioSourceType(audioSource));
-    media::DeviceRole roleAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_device_role_t_DeviceRole(role));
-    std::vector<media::AudioDevice> devicesAidl = VALUE_OR_RETURN_STATUS(
-            convertContainer<std::vector<media::AudioDevice>>(devices,
-                                                              legacy2aidl_AudioDeviceTypeAddress));
-    return statusTFromBinderStatus(
-            aps->addDevicesRoleForCapturePreset(audioSourceAidl, roleAidl, devicesAidl));
-}
-
-status_t AudioSystem::removeDevicesRoleForCapturePreset(
-        audio_source_t audioSource, device_role_t role, const AudioDeviceTypeAddrVector& devices) {
-    const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
-    if (aps == 0) {
-        return PERMISSION_DENIED;
-    }
-    media::AudioSourceType audioSourceAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_source_t_AudioSourceType(audioSource));
-    media::DeviceRole roleAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_device_role_t_DeviceRole(role));
-    std::vector<media::AudioDevice> devicesAidl = VALUE_OR_RETURN_STATUS(
-            convertContainer<std::vector<media::AudioDevice>>(devices,
-                                                              legacy2aidl_AudioDeviceTypeAddress));
-    return statusTFromBinderStatus(
-            aps->removeDevicesRoleForCapturePreset(audioSourceAidl, roleAidl, devicesAidl));
-}
-
-status_t AudioSystem::clearDevicesRoleForCapturePreset(audio_source_t audioSource,
-                                                       device_role_t role) {
-    const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
-    if (aps == 0) {
-        return PERMISSION_DENIED;
-    }
-    media::AudioSourceType audioSourceAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_source_t_AudioSourceType(audioSource));
-    media::DeviceRole roleAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_device_role_t_DeviceRole(role));
-    return statusTFromBinderStatus(
-            aps->clearDevicesRoleForCapturePreset(audioSourceAidl, roleAidl));
-}
-
-status_t AudioSystem::getDevicesForRoleAndCapturePreset(audio_source_t audioSource,
-                                                        device_role_t role,
-                                                        AudioDeviceTypeAddrVector& devices) {
-    const sp<IAudioPolicyService>& aps = AudioSystem::get_audio_policy_service();
-    if (aps == 0) {
-        return PERMISSION_DENIED;
-    }
-    media::AudioSourceType audioSourceAidl = VALUE_OR_RETURN_STATUS(
-            legacy2aidl_audio_source_t_AudioSourceType(audioSource));
-    media::DeviceRole roleAidl = VALUE_OR_RETURN_STATUS(legacy2aidl_device_role_t_DeviceRole(role));
-    std::vector<media::AudioDevice> devicesAidl;
-    RETURN_STATUS_IF_ERROR(statusTFromBinderStatus(
-            aps->getDevicesForRoleAndCapturePreset(audioSourceAidl, roleAidl, &devicesAidl)));
-    devices = VALUE_OR_RETURN_STATUS(
-            convertContainer<AudioDeviceTypeAddrVector>(devicesAidl,
-                                                        aidl2legacy_AudioDeviceTypeAddress));
-    return OK;
+    return aps->getPreferredDeviceForStrategy(strategy, device);
 }
 
 class CaptureStateListenerImpl : public media::BnCaptureStateListener,
                                  public IBinder::DeathRecipient {
 public:
-    CaptureStateListenerImpl(
-            const sp<IAudioPolicyService>& aps,
-            const sp<AudioSystem::CaptureStateListener>& listener)
-            : mAps(aps), mListener(listener) {}
-
-    void init() {
-        bool active;
-        status_t status = statusTFromBinderStatus(
-                mAps->registerSoundTriggerCaptureStateListener(this, &active));
-        if (status != NO_ERROR) {
-            mListener->onServiceDied();
-            return;
-        }
-        mListener->onStateChanged(active);
-        IInterface::asBinder(mAps)->linkToDeath(this);
-    }
-
     binder::Status setCaptureState(bool active) override {
         Mutex::Autolock _l(gSoundTriggerCaptureStateListenerLock);
-        mListener->onStateChanged(active);
+        gSoundTriggerCaptureStateListener->onStateChanged(active);
         return binder::Status::ok();
     }
 
     void binderDied(const wp<IBinder>&) override {
         Mutex::Autolock _l(gSoundTriggerCaptureStateListenerLock);
-        mListener->onServiceDied();
+        gSoundTriggerCaptureStateListener->onServiceDied();
         gSoundTriggerCaptureStateListener = nullptr;
     }
-
-private:
-    // Need this in order to keep the death receipent alive.
-    sp<IAudioPolicyService> mAps;
-    sp<AudioSystem::CaptureStateListener> mListener;
 };
 
 status_t AudioSystem::registerSoundTriggerCaptureStateListener(
-        const sp<CaptureStateListener>& listener) {
-    LOG_ALWAYS_FATAL_IF(listener == nullptr);
-
+    const sp<CaptureStateListener>& listener) {
     const sp<IAudioPolicyService>& aps =
             AudioSystem::get_audio_policy_service();
     if (aps == 0) {
         return PERMISSION_DENIED;
     }
 
+    sp<CaptureStateListenerImpl> wrapper = new CaptureStateListenerImpl();
+
     Mutex::Autolock _l(gSoundTriggerCaptureStateListenerLock);
-    gSoundTriggerCaptureStateListener = new CaptureStateListenerImpl(aps, listener);
-    gSoundTriggerCaptureStateListener->init();
 
-    return NO_ERROR;
-}
-
-status_t AudioSystem::setVibratorInfos(
-        const std::vector<media::AudioVibratorInfo>& vibratorInfos) {
-    const sp<IAudioFlinger>& af = AudioSystem::get_audio_flinger();
-    if (af == nullptr) {
-        return PERMISSION_DENIED;
+    bool active;
+    status_t status =
+        aps->registerSoundTriggerCaptureStateListener(wrapper, &active);
+    if (status != NO_ERROR) {
+        listener->onServiceDied();
+        return NO_ERROR;
     }
-    return af->setVibratorInfos(vibratorInfos);
+    gSoundTriggerCaptureStateListener = listener;
+    listener->onStateChanged(active);
+    sp<IBinder> binder = IInterface::asBinder(aps);
+    binder->linkToDeath(wrapper);
+    return NO_ERROR;
 }
 
 // ---------------------------------------------------------------------------
 
 int AudioSystem::AudioPolicyServiceClient::addAudioPortCallback(
-        const sp<AudioPortCallback>& callback) {
+        const sp<AudioPortCallback>& callback)
+{
     Mutex::Autolock _l(mLock);
     for (size_t i = 0; i < mAudioPortCallbacks.size(); i++) {
         if (mAudioPortCallbacks[i] == callback) {
@@ -2313,7 +1689,8 @@ int AudioSystem::AudioPolicyServiceClient::addAudioPortCallback(
 }
 
 int AudioSystem::AudioPolicyServiceClient::removeAudioPortCallback(
-        const sp<AudioPortCallback>& callback) {
+        const sp<AudioPortCallback>& callback)
+{
     Mutex::Autolock _l(mLock);
     size_t i;
     for (i = 0; i < mAudioPortCallbacks.size(); i++) {
@@ -2329,25 +1706,26 @@ int AudioSystem::AudioPolicyServiceClient::removeAudioPortCallback(
 }
 
 
-Status AudioSystem::AudioPolicyServiceClient::onAudioPortListUpdate() {
+void AudioSystem::AudioPolicyServiceClient::onAudioPortListUpdate()
+{
     Mutex::Autolock _l(mLock);
     for (size_t i = 0; i < mAudioPortCallbacks.size(); i++) {
         mAudioPortCallbacks[i]->onAudioPortListUpdate();
     }
-    return Status::ok();
 }
 
-Status AudioSystem::AudioPolicyServiceClient::onAudioPatchListUpdate() {
+void AudioSystem::AudioPolicyServiceClient::onAudioPatchListUpdate()
+{
     Mutex::Autolock _l(mLock);
     for (size_t i = 0; i < mAudioPortCallbacks.size(); i++) {
         mAudioPortCallbacks[i]->onAudioPatchListUpdate();
     }
-    return Status::ok();
 }
 
 // ----------------------------------------------------------------------------
 int AudioSystem::AudioPolicyServiceClient::addAudioVolumeGroupCallback(
-        const sp<AudioVolumeGroupCallback>& callback) {
+        const sp<AudioVolumeGroupCallback>& callback)
+{
     Mutex::Autolock _l(mLock);
     for (size_t i = 0; i < mAudioVolumeGroupCallback.size(); i++) {
         if (mAudioVolumeGroupCallback[i] == callback) {
@@ -2359,7 +1737,8 @@ int AudioSystem::AudioPolicyServiceClient::addAudioVolumeGroupCallback(
 }
 
 int AudioSystem::AudioPolicyServiceClient::removeAudioVolumeGroupCallback(
-        const sp<AudioVolumeGroupCallback>& callback) {
+        const sp<AudioVolumeGroupCallback>& callback)
+{
     Mutex::Autolock _l(mLock);
     size_t i;
     for (i = 0; i < mAudioVolumeGroupCallback.size(); i++) {
@@ -2374,26 +1753,20 @@ int AudioSystem::AudioPolicyServiceClient::removeAudioVolumeGroupCallback(
     return mAudioVolumeGroupCallback.size();
 }
 
-Status AudioSystem::AudioPolicyServiceClient::onAudioVolumeGroupChanged(int32_t group,
-                                                                        int32_t flags) {
-    volume_group_t groupLegacy = VALUE_OR_RETURN_BINDER_STATUS(
-            aidl2legacy_int32_t_volume_group_t(group));
-    int flagsLegacy = VALUE_OR_RETURN_BINDER_STATUS(convertReinterpret<int>(flags));
-
+void AudioSystem::AudioPolicyServiceClient::onAudioVolumeGroupChanged(volume_group_t group,
+                                                                      int flags)
+{
     Mutex::Autolock _l(mLock);
     for (size_t i = 0; i < mAudioVolumeGroupCallback.size(); i++) {
-        mAudioVolumeGroupCallback[i]->onAudioVolumeGroupChanged(groupLegacy, flagsLegacy);
+        mAudioVolumeGroupCallback[i]->onAudioVolumeGroupChanged(group, flags);
     }
-    return Status::ok();
 }
 // ----------------------------------------------------------------------------
 
-Status AudioSystem::AudioPolicyServiceClient::onDynamicPolicyMixStateUpdate(
-        const ::std::string& regId, int32_t state) {
-    ALOGV("AudioPolicyServiceClient::onDynamicPolicyMixStateUpdate(%s, %d)", regId.c_str(), state);
-
-    String8 regIdLegacy = VALUE_OR_RETURN_BINDER_STATUS(aidl2legacy_string_view_String8(regId));
-    int stateLegacy = VALUE_OR_RETURN_BINDER_STATUS(convertReinterpret<int>(state));
+void AudioSystem::AudioPolicyServiceClient::onDynamicPolicyMixStateUpdate(
+        String8 regId, int32_t state)
+{
+    ALOGV("AudioPolicyServiceClient::onDynamicPolicyMixStateUpdate(%s, %d)", regId.string(), state);
     dynamic_policy_callback cb = NULL;
     {
         Mutex::Autolock _l(AudioSystem::gLock);
@@ -2401,20 +1774,19 @@ Status AudioSystem::AudioPolicyServiceClient::onDynamicPolicyMixStateUpdate(
     }
 
     if (cb != NULL) {
-        cb(DYNAMIC_POLICY_EVENT_MIX_STATE_UPDATE, regIdLegacy, stateLegacy);
+        cb(DYNAMIC_POLICY_EVENT_MIX_STATE_UPDATE, regId, state);
     }
-    return Status::ok();
 }
 
-Status AudioSystem::AudioPolicyServiceClient::onRecordingConfigurationUpdate(
-        int32_t event,
-        const media::RecordClientInfo& clientInfo,
-        const media::AudioConfigBase& clientConfig,
-        const std::vector<media::EffectDescriptor>& clientEffects,
-        const media::AudioConfigBase& deviceConfig,
-        const std::vector<media::EffectDescriptor>& effects,
-        int32_t patchHandle,
-        media::AudioSourceType source) {
+void AudioSystem::AudioPolicyServiceClient::onRecordingConfigurationUpdate(
+                                                int event,
+                                                const record_client_info_t *clientInfo,
+                                                const audio_config_base_t *clientConfig,
+                                                std::vector<effect_descriptor_t> clientEffects,
+                                                const audio_config_base_t *deviceConfig,
+                                                std::vector<effect_descriptor_t> effects,
+                                                audio_patch_handle_t patchHandle,
+                                                audio_source_t source) {
     record_config_callback cb = NULL;
     {
         Mutex::Autolock _l(AudioSystem::gLock);
@@ -2422,45 +1794,13 @@ Status AudioSystem::AudioPolicyServiceClient::onRecordingConfigurationUpdate(
     }
 
     if (cb != NULL) {
-        int eventLegacy = VALUE_OR_RETURN_BINDER_STATUS(convertReinterpret<int>(event));
-        record_client_info_t clientInfoLegacy = VALUE_OR_RETURN_BINDER_STATUS(
-                aidl2legacy_RecordClientInfo_record_client_info_t(clientInfo));
-        audio_config_base_t clientConfigLegacy = VALUE_OR_RETURN_BINDER_STATUS(
-                aidl2legacy_AudioConfigBase_audio_config_base_t(clientConfig));
-        std::vector<effect_descriptor_t> clientEffectsLegacy = VALUE_OR_RETURN_BINDER_STATUS(
-                convertContainer<std::vector<effect_descriptor_t>>(
-                        clientEffects,
-                        aidl2legacy_EffectDescriptor_effect_descriptor_t));
-        audio_config_base_t deviceConfigLegacy = VALUE_OR_RETURN_BINDER_STATUS(
-                aidl2legacy_AudioConfigBase_audio_config_base_t(deviceConfig));
-        std::vector<effect_descriptor_t> effectsLegacy = VALUE_OR_RETURN_BINDER_STATUS(
-                convertContainer<std::vector<effect_descriptor_t>>(
-                        effects,
-                        aidl2legacy_EffectDescriptor_effect_descriptor_t));
-        audio_patch_handle_t patchHandleLegacy = VALUE_OR_RETURN_BINDER_STATUS(
-                aidl2legacy_int32_t_audio_patch_handle_t(patchHandle));
-        audio_source_t sourceLegacy = VALUE_OR_RETURN_BINDER_STATUS(
-                aidl2legacy_AudioSourceType_audio_source_t(source));
-        cb(eventLegacy, &clientInfoLegacy, &clientConfigLegacy, clientEffectsLegacy,
-           &deviceConfigLegacy, effectsLegacy, patchHandleLegacy, sourceLegacy);
+        cb(event, clientInfo, clientConfig, clientEffects,
+           deviceConfig, effects, patchHandle, source);
     }
-    return Status::ok();
 }
 
-Status AudioSystem::AudioPolicyServiceClient::onRoutingUpdated() {
-    routing_callback cb = NULL;
-    {
-        Mutex::Autolock _l(AudioSystem::gLock);
-        cb = gRoutingCallback;
-    }
-
-    if (cb != NULL) {
-        cb();
-    }
-    return Status::ok();
-}
-
-void AudioSystem::AudioPolicyServiceClient::binderDied(const wp<IBinder>& who __unused) {
+void AudioSystem::AudioPolicyServiceClient::binderDied(const wp<IBinder>& who __unused)
+{
     {
         Mutex::Autolock _l(mLock);
         for (size_t i = 0; i < mAudioPortCallbacks.size(); i++) {
@@ -2476,30 +1816,6 @@ void AudioSystem::AudioPolicyServiceClient::binderDied(const wp<IBinder>& who __
     }
 
     ALOGW("AudioPolicyService server died!");
-}
-
-ConversionResult<record_client_info_t>
-aidl2legacy_RecordClientInfo_record_client_info_t(const media::RecordClientInfo& aidl) {
-    record_client_info_t legacy;
-    legacy.riid = VALUE_OR_RETURN(aidl2legacy_int32_t_audio_unique_id_t(aidl.riid));
-    legacy.uid = VALUE_OR_RETURN(aidl2legacy_int32_t_uid_t(aidl.uid));
-    legacy.session = VALUE_OR_RETURN(aidl2legacy_int32_t_audio_session_t(aidl.session));
-    legacy.source = VALUE_OR_RETURN(aidl2legacy_AudioSourceType_audio_source_t(aidl.source));
-    legacy.port_id = VALUE_OR_RETURN(aidl2legacy_int32_t_audio_port_handle_t(aidl.portId));
-    legacy.silenced = aidl.silenced;
-    return legacy;
-}
-
-ConversionResult<media::RecordClientInfo>
-legacy2aidl_record_client_info_t_RecordClientInfo(const record_client_info_t& legacy) {
-    media::RecordClientInfo aidl;
-    aidl.riid = VALUE_OR_RETURN(legacy2aidl_audio_unique_id_t_int32_t(legacy.riid));
-    aidl.uid = VALUE_OR_RETURN(legacy2aidl_uid_t_int32_t(legacy.uid));
-    aidl.session = VALUE_OR_RETURN(legacy2aidl_audio_session_t_int32_t(legacy.session));
-    aidl.source = VALUE_OR_RETURN(legacy2aidl_audio_source_t_AudioSourceType(legacy.source));
-    aidl.portId = VALUE_OR_RETURN(legacy2aidl_audio_port_handle_t_int32_t(legacy.port_id));
-    aidl.silenced = legacy.silenced;
-    return aidl;
 }
 
 } // namespace android

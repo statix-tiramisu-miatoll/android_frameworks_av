@@ -1,6 +1,5 @@
 {
   "presubmit": [
-
     // TODO(b/153661591) enable test once the bug is fixed
     // This tests the extractor path
     // {
@@ -14,14 +13,7 @@
     //      }
     //    ]
     //  }
-  ],
-
-  // tests which require dynamic content
-  // invoke with: atest -- --enable-module-dynamic-download=true
-  // TODO(b/148094059): unit tests not allowed to download content
-  "dynamic-presubmit": [
-    { "name": "ExtractorUnitTest" }
+    // TODO(b/148094059): unit tests not allowed to download content
+    //{ "name": "ExtractorUnitTest" }
   ]
-
-
 }

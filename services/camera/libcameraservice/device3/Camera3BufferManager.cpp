@@ -40,17 +40,16 @@ status_t Camera3BufferManager::registerStream(wp<Camera3OutputStream>& stream,
     ATRACE_CALL();
 
     int streamId = streamInfo.streamId;
-    StreamSetKey streamSetKey = {streamInfo.streamSetId, streamInfo.isMultiRes};
+    int streamSetId = streamInfo.streamSetId;
 
-    if (streamId == CAMERA3_STREAM_ID_INVALID ||
-            streamSetKey.id == CAMERA3_STREAM_SET_ID_INVALID) {
+    if (streamId == CAMERA3_STREAM_ID_INVALID || streamSetId == CAMERA3_STREAM_SET_ID_INVALID) {
         ALOGE("%s: Stream id (%d) or stream set id (%d) is invalid",
-                __FUNCTION__, streamId, streamSetKey.id);
+                __FUNCTION__, streamId, streamSetId);
         return BAD_VALUE;
     }
     if (streamInfo.totalBufferCount > kMaxBufferCount || streamInfo.totalBufferCount == 0) {
         ALOGE("%s: Stream id (%d) with stream set id (%d) total buffer count %zu is invalid",
-                __FUNCTION__, streamId, streamSetKey.id, streamInfo.totalBufferCount);
+                __FUNCTION__, streamId, streamSetId, streamInfo.totalBufferCount);
         return BAD_VALUE;
     }
     if (!streamInfo.isConfigured) {
@@ -76,8 +75,7 @@ status_t Camera3BufferManager::registerStream(wp<Camera3OutputStream>& stream,
     for (size_t i = 0; i < mStreamSetMap.size(); i++) {
         ssize_t streamIdx = mStreamSetMap[i].streamInfoMap.indexOfKey(streamId);
         if (streamIdx != NAME_NOT_FOUND &&
-            mStreamSetMap[i].streamInfoMap[streamIdx].streamSetId != streamInfo.streamSetId &&
-            mStreamSetMap[i].streamInfoMap[streamIdx].isMultiRes != streamInfo.isMultiRes) {
+            mStreamSetMap[i].streamInfoMap[streamIdx].streamSetId != streamInfo.streamSetId) {
             ALOGE("%s: It is illegal to register the same stream id with different stream set",
                     __FUNCTION__);
             return BAD_VALUE;
@@ -85,20 +83,20 @@ status_t Camera3BufferManager::registerStream(wp<Camera3OutputStream>& stream,
     }
     // Check if there is an existing stream set registered; if not, create one; otherwise, add this
     // stream info to the existing stream set entry.
-    ssize_t setIdx = mStreamSetMap.indexOfKey(streamSetKey);
+    ssize_t setIdx = mStreamSetMap.indexOfKey(streamSetId);
     if (setIdx == NAME_NOT_FOUND) {
-        ALOGV("%s: stream set %d(%d) is not registered to stream set map yet, create it.",
-                __FUNCTION__, streamSetKey.id, streamSetKey.isMultiRes);
+        ALOGV("%s: stream set %d is not registered to stream set map yet, create it.",
+                __FUNCTION__, streamSetId);
         // Create stream info map, then add to mStreamsetMap.
         StreamSet newStreamSet;
-        setIdx = mStreamSetMap.add(streamSetKey, newStreamSet);
+        setIdx = mStreamSetMap.add(streamSetId, newStreamSet);
     }
     // Update stream set map and water mark.
     StreamSet& currentStreamSet = mStreamSetMap.editValueAt(setIdx);
     ssize_t streamIdx = currentStreamSet.streamInfoMap.indexOfKey(streamId);
     if (streamIdx != NAME_NOT_FOUND) {
-        ALOGW("%s: stream %d was already registered with stream set %d(%d)",
-                __FUNCTION__, streamId, streamSetKey.id, streamSetKey.isMultiRes);
+        ALOGW("%s: stream %d was already registered with stream set %d",
+                __FUNCTION__, streamId, streamSetId);
         return OK;
     }
     currentStreamSet.streamInfoMap.add(streamId, streamInfo);
@@ -115,22 +113,21 @@ status_t Camera3BufferManager::registerStream(wp<Camera3OutputStream>& stream,
     return OK;
 }
 
-status_t Camera3BufferManager::unregisterStream(int streamId, int streamSetId, bool isMultiRes) {
+status_t Camera3BufferManager::unregisterStream(int streamId, int streamSetId) {
     ATRACE_CALL();
 
     Mutex::Autolock l(mLock);
-    ALOGV("%s: unregister stream %d with stream set %d(%d)", __FUNCTION__,
-            streamId, streamSetId, isMultiRes);
+    ALOGV("%s: unregister stream %d with stream set %d", __FUNCTION__,
+            streamId, streamSetId);
 
-    StreamSetKey streamSetKey = {streamSetId, isMultiRes};
-    if (!checkIfStreamRegisteredLocked(streamId, streamSetKey)){
-        ALOGE("%s: stream %d with set %d(%d) wasn't properly registered to this"
-                " buffer manager!", __FUNCTION__, streamId, streamSetId, isMultiRes);
+    if (!checkIfStreamRegisteredLocked(streamId, streamSetId)){
+        ALOGE("%s: stream %d with set id %d wasn't properly registered to this buffer manager!",
+                __FUNCTION__, streamId, streamSetId);
         return BAD_VALUE;
     }
 
     // De-list all the buffers associated with this stream first.
-    StreamSet& currentSet = mStreamSetMap.editValueFor(streamSetKey);
+    StreamSet& currentSet = mStreamSetMap.editValueFor(streamSetId);
     BufferCountMap& handOutBufferCounts = currentSet.handoutBufferCountMap;
     BufferCountMap& attachedBufferCounts = currentSet.attachedBufferCountMap;
     InfoMap& infoMap = currentSet.streamInfoMap;
@@ -153,28 +150,26 @@ status_t Camera3BufferManager::unregisterStream(int streamId, int streamSetId, b
 
     // Remove this stream set if all its streams have been removed.
     if (handOutBufferCounts.size() == 0 && infoMap.size() == 0) {
-        mStreamSetMap.removeItem(streamSetKey);
+        mStreamSetMap.removeItem(streamSetId);
     }
 
     return OK;
 }
 
-void Camera3BufferManager::notifyBufferRemoved(int streamId, int streamSetId, bool isMultiRes) {
+void Camera3BufferManager::notifyBufferRemoved(int streamId, int streamSetId) {
     Mutex::Autolock l(mLock);
-    StreamSetKey streamSetKey = {streamSetId, isMultiRes};
-    StreamSet &streamSet = mStreamSetMap.editValueFor(streamSetKey);
+    StreamSet &streamSet = mStreamSetMap.editValueFor(streamSetId);
     size_t& attachedBufferCount =
             streamSet.attachedBufferCountMap.editValueFor(streamId);
     attachedBufferCount--;
 }
 
 status_t Camera3BufferManager::checkAndFreeBufferOnOtherStreamsLocked(
-        int streamId, StreamSetKey streamSetKey) {
+        int streamId, int streamSetId) {
     StreamId firstOtherStreamId = CAMERA3_STREAM_ID_INVALID;
-    StreamSet &streamSet = mStreamSetMap.editValueFor(streamSetKey);
+    StreamSet &streamSet = mStreamSetMap.editValueFor(streamSetId);
     if (streamSet.streamInfoMap.size() == 1) {
-        ALOGV("StreamSet %d(%d) has no other stream available to free",
-                streamSetKey.id, streamSetKey.isMultiRes);
+        ALOGV("StreamSet %d has no other stream available to free", streamSetId);
         return OK;
     }
 
@@ -195,8 +190,7 @@ status_t Camera3BufferManager::checkAndFreeBufferOnOtherStreamsLocked(
         firstOtherStreamId = CAMERA3_STREAM_ID_INVALID;
     }
     if (firstOtherStreamId == CAMERA3_STREAM_ID_INVALID || !freeBufferIsAttached) {
-        ALOGV("StreamSet %d(%d) has no buffer available to free",
-                streamSetKey.id, streamSetKey.isMultiRes);
+        ALOGV("StreamSet %d has no buffer available to free", streamSetId);
         return OK;
     }
 
@@ -243,21 +237,20 @@ status_t Camera3BufferManager::checkAndFreeBufferOnOtherStreamsLocked(
 }
 
 status_t Camera3BufferManager::getBufferForStream(int streamId, int streamSetId,
-        bool isMultiRes, sp<GraphicBuffer>* gb, int* fenceFd, bool noFreeBufferAtConsumer) {
+        sp<GraphicBuffer>* gb, int* fenceFd, bool noFreeBufferAtConsumer) {
     ATRACE_CALL();
 
     Mutex::Autolock l(mLock);
-    ALOGV("%s: get buffer for stream %d with stream set %d(%d)", __FUNCTION__,
-            streamId, streamSetId, isMultiRes);
+    ALOGV("%s: get buffer for stream %d with stream set %d", __FUNCTION__,
+            streamId, streamSetId);
 
-    StreamSetKey streamSetKey = {streamSetId, isMultiRes};
-    if (!checkIfStreamRegisteredLocked(streamId, streamSetKey)) {
-        ALOGE("%s: stream %d is not registered with stream set %d(%d) yet!!!",
-                __FUNCTION__, streamId, streamSetId, isMultiRes);
+    if (!checkIfStreamRegisteredLocked(streamId, streamSetId)) {
+        ALOGE("%s: stream %d is not registered with stream set %d yet!!!",
+                __FUNCTION__, streamId, streamSetId);
         return BAD_VALUE;
     }
 
-    StreamSet &streamSet = mStreamSetMap.editValueFor(streamSetKey);
+    StreamSet &streamSet = mStreamSetMap.editValueFor(streamSetId);
     BufferCountMap& handOutBufferCounts = streamSet.handoutBufferCountMap;
     size_t& bufferCount = handOutBufferCounts.editValueFor(streamId);
     BufferCountMap& attachedBufferCounts = streamSet.attachedBufferCountMap;
@@ -279,8 +272,7 @@ status_t Camera3BufferManager::getBufferForStream(int streamId, int streamSetId,
         bufferCount++;
         return ALREADY_EXISTS;
     }
-    ALOGV("Stream %d set %d(%d): Get buffer for stream: Allocate new",
-            streamId, streamSetId, isMultiRes);
+    ALOGV("Stream %d set %d: Get buffer for stream: Allocate new", streamId, streamSetId);
 
     if (mGrallocVersion < HARDWARE_DEVICE_API_VERSION(1,0)) {
         const StreamInfo& info = streamSet.streamInfoMap.valueFor(streamId);
@@ -321,13 +313,13 @@ status_t Camera3BufferManager::getBufferForStream(int streamId, int streamSetId,
         // in returnBufferForStream() if we want to free buffer more quickly.
         // TODO: probably should find out all the inactive stream IDs, and free the firstly found
         // buffers for them.
-        res = checkAndFreeBufferOnOtherStreamsLocked(streamId, streamSetKey);
+        res = checkAndFreeBufferOnOtherStreamsLocked(streamId, streamSetId);
         if (res != OK) {
             return res;
         }
         // Since we just allocated one new buffer above, try free one more buffer from other streams
         // to prevent total buffer count from growing
-        res = checkAndFreeBufferOnOtherStreamsLocked(streamId, streamSetKey);
+        res = checkAndFreeBufferOnOtherStreamsLocked(streamId, streamSetId);
         if (res != OK) {
             return res;
         }
@@ -340,7 +332,7 @@ status_t Camera3BufferManager::getBufferForStream(int streamId, int streamSetId,
 }
 
 status_t Camera3BufferManager::onBufferReleased(
-        int streamId, int streamSetId, bool isMultiRes, bool* shouldFreeBuffer) {
+        int streamId, int streamSetId, bool* shouldFreeBuffer) {
     ATRACE_CALL();
 
     if (shouldFreeBuffer == nullptr) {
@@ -349,24 +341,22 @@ status_t Camera3BufferManager::onBufferReleased(
     }
 
     Mutex::Autolock l(mLock);
-    ALOGV("Stream %d set %d(%d): Buffer released", streamId, streamSetId, isMultiRes);
+    ALOGV("Stream %d set %d: Buffer released", streamId, streamSetId);
     *shouldFreeBuffer = false;
 
-    StreamSetKey streamSetKey = {streamSetId, isMultiRes};
-    if (!checkIfStreamRegisteredLocked(streamId, streamSetKey)){
+    if (!checkIfStreamRegisteredLocked(streamId, streamSetId)){
         ALOGV("%s: signaling buffer release for an already unregistered stream "
-                "(stream %d with set id %d(%d))", __FUNCTION__, streamId, streamSetId,
-                isMultiRes);
+                "(stream %d with set id %d)", __FUNCTION__, streamId, streamSetId);
         return OK;
     }
 
     if (mGrallocVersion < HARDWARE_DEVICE_API_VERSION(1,0)) {
-        StreamSet& streamSet = mStreamSetMap.editValueFor(streamSetKey);
+        StreamSet& streamSet = mStreamSetMap.editValueFor(streamSetId);
         BufferCountMap& handOutBufferCounts = streamSet.handoutBufferCountMap;
         size_t& bufferCount = handOutBufferCounts.editValueFor(streamId);
         bufferCount--;
-        ALOGV("%s: Stream %d set %d(%d): Buffer count now %zu", __FUNCTION__, streamId,
-                streamSetId, isMultiRes, bufferCount);
+        ALOGV("%s: Stream %d set %d: Buffer count now %zu", __FUNCTION__, streamId, streamSetId,
+                bufferCount);
 
         size_t totalAllocatedBufferCount = 0;
         size_t totalHandOutBufferCount = 0;
@@ -381,9 +371,8 @@ status_t Camera3BufferManager::onBufferReleased(
             // BufferManager got more than enough buffers, so decrease watermark
             // to trigger more buffers free operation.
             streamSet.allocatedBufferWaterMark = newWaterMark;
-            ALOGV("%s: Stream %d set %d(%d): watermark--; now %zu",
-                    __FUNCTION__, streamId, streamSetId, isMultiRes,
-                    streamSet.allocatedBufferWaterMark);
+            ALOGV("%s: Stream %d set %d: watermark--; now %zu",
+                    __FUNCTION__, streamId, streamSetId, streamSet.allocatedBufferWaterMark);
         }
 
         size_t attachedBufferCount = streamSet.attachedBufferCountMap.valueFor(streamId);
@@ -406,22 +395,20 @@ status_t Camera3BufferManager::onBufferReleased(
     return OK;
 }
 
-status_t Camera3BufferManager::onBuffersRemoved(int streamId, int streamSetId,
-        bool isMultiRes, size_t count) {
+status_t Camera3BufferManager::onBuffersRemoved(int streamId, int streamSetId, size_t count) {
     ATRACE_CALL();
     Mutex::Autolock l(mLock);
 
-    ALOGV("Stream %d set %d(%d): Buffer removed", streamId, streamSetId, isMultiRes);
+    ALOGV("Stream %d set %d: Buffer removed", streamId, streamSetId);
 
-    StreamSetKey streamSetKey = {streamSetId, isMultiRes};
-    if (!checkIfStreamRegisteredLocked(streamId, streamSetKey)){
+    if (!checkIfStreamRegisteredLocked(streamId, streamSetId)){
         ALOGV("%s: signaling buffer removal for an already unregistered stream "
-                "(stream %d with set id %d(%d))", __FUNCTION__, streamId, streamSetId, isMultiRes);
+                "(stream %d with set id %d)", __FUNCTION__, streamId, streamSetId);
         return OK;
     }
 
     if (mGrallocVersion < HARDWARE_DEVICE_API_VERSION(1,0)) {
-        StreamSet& streamSet = mStreamSetMap.editValueFor(streamSetKey);
+        StreamSet& streamSet = mStreamSetMap.editValueFor(streamSetId);
         BufferCountMap& handOutBufferCounts = streamSet.handoutBufferCountMap;
         size_t& totalHandoutCount = handOutBufferCounts.editValueFor(streamId);
         BufferCountMap& attachedBufferCounts = streamSet.attachedBufferCountMap;
@@ -440,9 +427,8 @@ status_t Camera3BufferManager::onBuffersRemoved(int streamId, int streamSetId,
 
         totalHandoutCount -= count;
         totalAttachedCount -= count;
-        ALOGV("%s: Stream %d set %d(%d): Buffer count now %zu, attached buffer count now %zu",
-                __FUNCTION__, streamId, streamSetId, isMultiRes, totalHandoutCount,
-                totalAttachedCount);
+        ALOGV("%s: Stream %d set %d: Buffer count now %zu, attached buffer count now %zu",
+                __FUNCTION__, streamId, streamSetId, totalHandoutCount, totalAttachedCount);
     } else {
         // TODO: implement gralloc V1 support
         return BAD_VALUE;
@@ -458,8 +444,7 @@ void Camera3BufferManager::dump(int fd, const Vector<String16>& args) const {
     String8 lines;
     lines.appendFormat("      Total stream sets: %zu\n", mStreamSetMap.size());
     for (size_t i = 0; i < mStreamSetMap.size(); i++) {
-        lines.appendFormat("        Stream set %d(%d) has below streams:\n",
-                mStreamSetMap.keyAt(i).id, mStreamSetMap.keyAt(i).isMultiRes);
+        lines.appendFormat("        Stream set %d has below streams:\n", mStreamSetMap.keyAt(i));
         for (size_t j = 0; j < mStreamSetMap[i].streamInfoMap.size(); j++) {
             lines.appendFormat("          Stream %d\n", mStreamSetMap[i].streamInfoMap[j].streamId);
         }
@@ -485,12 +470,11 @@ void Camera3BufferManager::dump(int fd, const Vector<String16>& args) const {
     write(fd, lines.string(), lines.size());
 }
 
-bool Camera3BufferManager::checkIfStreamRegisteredLocked(int streamId,
-        StreamSetKey streamSetKey) const {
-    ssize_t setIdx = mStreamSetMap.indexOfKey(streamSetKey);
+bool Camera3BufferManager::checkIfStreamRegisteredLocked(int streamId, int streamSetId) const {
+    ssize_t setIdx = mStreamSetMap.indexOfKey(streamSetId);
     if (setIdx == NAME_NOT_FOUND) {
-        ALOGV("%s: stream set %d(%d) is not registered to stream set map yet!",
-                __FUNCTION__, streamSetKey.id, streamSetKey.isMultiRes);
+        ALOGV("%s: stream set %d is not registered to stream set map yet!",
+                __FUNCTION__, streamSetId);
         return false;
     }
 
@@ -502,10 +486,9 @@ bool Camera3BufferManager::checkIfStreamRegisteredLocked(int streamId,
 
     size_t bufferWaterMark = mStreamSetMap[setIdx].maxAllowedBufferCount;
     if (bufferWaterMark == 0 || bufferWaterMark > kMaxBufferCount) {
-        ALOGW("%s: stream %d with stream set %d(%d) is not registered correctly to stream set map,"
+        ALOGW("%s: stream %d with stream set %d is not registered correctly to stream set map,"
                 " as the water mark (%zu) is wrong!",
-                __FUNCTION__, streamId, streamSetKey.id, streamSetKey.isMultiRes,
-                bufferWaterMark);
+                __FUNCTION__, streamId, streamSetId, bufferWaterMark);
         return false;
     }
 

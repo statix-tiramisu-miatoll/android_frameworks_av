@@ -16,9 +16,13 @@
 
 //#define LOG_NDEBUG 0
 #define LOG_TAG "DrmHal"
+#include <iomanip>
+
+#include <utils/Log.h>
+
+#include <android/binder_manager.h>
 
 #include <aidl/android/media/BnResourceManagerClient.h>
-#include <android/binder_manager.h>
 #include <android/hardware/drm/1.2/types.h>
 #include <android/hidl/manager/1.2/IServiceManager.h>
 #include <hidl/ServiceManagement.h>
@@ -36,9 +40,7 @@
 #include <mediadrm/DrmSessionManager.h>
 #include <mediadrm/IDrmMetricsConsumer.h>
 #include <mediadrm/DrmUtils.h>
-#include <utils/Log.h>
 
-#include <iomanip>
 #include <vector>
 
 using drm::V1_0::KeyedVector;
@@ -53,7 +55,6 @@ using drm::V1_1::SecureStopRelease;
 using drm::V1_1::SecurityLevel;
 using drm::V1_2::KeySetId;
 using drm::V1_2::KeyStatusType;
-using ::android::DrmUtils::toStatusT;
 using ::android::hardware::drm::V1_1::DrmMetricGroup;
 using ::android::hardware::hidl_array;
 using ::android::hardware::hidl_string;
@@ -234,6 +235,58 @@ static List<Vector<uint8_t>> toKeySetIds(const hidl_vec<KeySetId>&
     return keySetIds;
 }
 
+static status_t toStatusT(Status status) {
+    switch (status) {
+    case Status::OK:
+        return OK;
+        break;
+    case Status::ERROR_DRM_NO_LICENSE:
+        return ERROR_DRM_NO_LICENSE;
+        break;
+    case Status::ERROR_DRM_LICENSE_EXPIRED:
+        return ERROR_DRM_LICENSE_EXPIRED;
+        break;
+    case Status::ERROR_DRM_SESSION_NOT_OPENED:
+        return ERROR_DRM_SESSION_NOT_OPENED;
+        break;
+    case Status::ERROR_DRM_CANNOT_HANDLE:
+        return ERROR_DRM_CANNOT_HANDLE;
+        break;
+    case Status::ERROR_DRM_INVALID_STATE:
+        return ERROR_DRM_INVALID_STATE;
+        break;
+    case Status::BAD_VALUE:
+        return BAD_VALUE;
+        break;
+    case Status::ERROR_DRM_NOT_PROVISIONED:
+        return ERROR_DRM_NOT_PROVISIONED;
+        break;
+    case Status::ERROR_DRM_RESOURCE_BUSY:
+        return ERROR_DRM_RESOURCE_BUSY;
+        break;
+    case Status::ERROR_DRM_DEVICE_REVOKED:
+        return ERROR_DRM_DEVICE_REVOKED;
+        break;
+    case Status::ERROR_DRM_UNKNOWN:
+    default:
+        return ERROR_DRM_UNKNOWN;
+        break;
+    }
+}
+
+static status_t toStatusT_1_2(Status_V1_2 status) {
+    switch (status) {
+    case Status_V1_2::ERROR_DRM_RESOURCE_CONTENTION:
+        return ERROR_DRM_RESOURCE_CONTENTION;
+    case Status_V1_2::ERROR_DRM_FRAME_TOO_LARGE:
+        return ERROR_DRM_FRAME_TOO_LARGE;
+    case Status_V1_2::ERROR_DRM_INSUFFICIENT_SECURITY:
+        return ERROR_DRM_INSUFFICIENT_SECURITY;
+    default:
+        return toStatusT(static_cast<Status>(status));
+    }
+}
+
 Mutex DrmHal::mLock;
 
 struct DrmHal::DrmSessionClient : public aidl::android::media::BnResourceManagerClient {
@@ -317,7 +370,8 @@ void DrmHal::cleanup() {
     closeOpenSessions();
 
     Mutex::Autolock autoLock(mLock);
-    reportFrameworkMetrics(reportPluginMetrics());
+    reportPluginMetrics();
+    reportFrameworkMetrics();
 
     setListener(NULL);
     mInitCheck = NO_INIT;
@@ -333,19 +387,18 @@ void DrmHal::cleanup() {
     mPlugin.clear();
     mPluginV1_1.clear();
     mPluginV1_2.clear();
-    mPluginV1_4.clear();
 }
 
 std::vector<sp<IDrmFactory>> DrmHal::makeDrmFactories() {
-    static std::vector<sp<IDrmFactory>> factories(DrmUtils::MakeDrmFactories());
+    std::vector<sp<IDrmFactory>> factories(DrmUtils::MakeDrmFactories());
     if (factories.size() == 0) {
         // must be in passthrough mode, load the default passthrough service
         auto passthrough = IDrmFactory::getService();
         if (passthrough != NULL) {
-            DrmUtils::LOG2BI("makeDrmFactories: using default passthrough drm instance");
+            ALOGI("makeDrmFactories: using default passthrough drm instance");
             factories.push_back(passthrough);
         } else {
-            DrmUtils::LOG2BE("Failed to find any drm factories");
+            ALOGE("Failed to find any drm factories");
         }
     }
     return factories;
@@ -361,7 +414,7 @@ sp<IDrmPlugin> DrmHal::makeDrmPlugin(const sp<IDrmFactory>& factory,
     Return<void> hResult = factory->createPlugin(uuid, appPackageName.string(),
             [&](Status status, const sp<IDrmPlugin>& hPlugin) {
                 if (status != Status::OK) {
-                    DrmUtils::LOG2BE(uuid, "Failed to make drm plugin: %d", status);
+                    ALOGE("Failed to make drm plugin");
                     return;
                 }
                 plugin = hPlugin;
@@ -369,8 +422,7 @@ sp<IDrmPlugin> DrmHal::makeDrmPlugin(const sp<IDrmFactory>& factory,
         );
 
     if (!hResult.isOk()) {
-        DrmUtils::LOG2BE(uuid, "createPlugin remote call failed: %s",
-                         hResult.description().c_str());
+        ALOGE("createPlugin remote call failed");
     }
 
     return plugin;
@@ -564,21 +616,18 @@ status_t DrmHal::createPlugin(const uint8_t uuid[16],
     Mutex::Autolock autoLock(mLock);
 
     for (ssize_t i = mFactories.size() - 1; i >= 0; i--) {
-        auto hResult = mFactories[i]->isCryptoSchemeSupported(uuid);
-        if (hResult.isOk() && hResult) {
+        if (mFactories[i]->isCryptoSchemeSupported(uuid)) {
             auto plugin = makeDrmPlugin(mFactories[i], uuid, appPackageName);
             if (plugin != NULL) {
                 mPlugin = plugin;
                 mPluginV1_1 = drm::V1_1::IDrmPlugin::castFrom(mPlugin);
                 mPluginV1_2 = drm::V1_2::IDrmPlugin::castFrom(mPlugin);
-                mPluginV1_4 = drm::V1_4::IDrmPlugin::castFrom(mPlugin);
                 break;
             }
         }
     }
 
     if (mPlugin == NULL) {
-        DrmUtils::LOG2BE(uuid, "No supported hal instance found");
         mInitCheck = ERROR_UNSUPPORTED;
     } else {
         mInitCheck = OK;
@@ -593,7 +642,6 @@ status_t DrmHal::createPlugin(const uint8_t uuid[16],
             mPlugin.clear();
             mPluginV1_1.clear();
             mPluginV1_2.clear();
-            mPluginV1_4.clear();
         }
     }
 
@@ -774,7 +822,7 @@ status_t DrmHal::getKeyRequest(Vector<uint8_t> const &sessionId,
                         defaultUrl = toString8(hDefaultUrl);
                         *keyRequestType = toKeyRequestType_1_1(hKeyRequestType);
                     }
-                    err = toStatusT(status);
+                    err = toStatusT_1_2(status);
                 });
     } else if (mPluginV1_1 != NULL) {
         hResult = mPluginV1_1->getKeyRequest_1_1(
@@ -888,7 +936,7 @@ status_t DrmHal::getProvisionRequest(String8 const &certType,
     Return<void> hResult;
 
     if (mPluginV1_2 != NULL) {
-        hResult = mPluginV1_2->getProvisionRequest_1_2(
+        Return<void> hResult = mPluginV1_2->getProvisionRequest_1_2(
                 toHidlString(certType), toHidlString(certAuthority),
                 [&](Status_V1_2 status, const hidl_vec<uint8_t>& hRequest,
                         const hidl_string& hDefaultUrl) {
@@ -896,11 +944,11 @@ status_t DrmHal::getProvisionRequest(String8 const &certType,
                         request = toVector(hRequest);
                         defaultUrl = toString8(hDefaultUrl);
                     }
-                    err = toStatusT(status);
+                    err = toStatusT_1_2(status);
                 }
             );
     } else {
-        hResult = mPlugin->getProvisionRequest(
+        Return<void> hResult = mPlugin->getProvisionRequest(
                 toHidlString(certType), toHidlString(certAuthority),
                 [&](Status status, const hidl_vec<uint8_t>& hRequest,
                         const hidl_string& hDefaultUrl) {
@@ -1068,7 +1116,7 @@ status_t DrmHal::getHdcpLevels(DrmPlugin::HdcpLevel *connected,
                         *connected = toHdcpLevel(hConnected);
                         *max = toHdcpLevel(hMax);
                     }
-                    err = toStatusT(status);
+                    err = toStatusT_1_2(status);
                 });
     } else if (mPluginV1_1 != NULL) {
         hResult = mPluginV1_1->getHdcpLevels(
@@ -1463,7 +1511,7 @@ status_t DrmHal::signRSA(Vector<uint8_t> const &sessionId,
     return hResult.isOk() ? err : DEAD_OBJECT;
 }
 
-std::string DrmHal::reportFrameworkMetrics(const std::string& pluginMetrics) const
+void DrmHal::reportFrameworkMetrics() const
 {
     mediametrics_handle_t item(mediametrics_create("mediadrm"));
     mediametrics_setUid(item, mMetrics.GetAppUid());
@@ -1492,26 +1540,21 @@ std::string DrmHal::reportFrameworkMetrics(const std::string& pluginMetrics) con
     if (!b64EncodedMetrics.empty()) {
         mediametrics_setCString(item, "serialized_metrics", b64EncodedMetrics.c_str());
     }
-    if (!pluginMetrics.empty()) {
-        mediametrics_setCString(item, "plugin_metrics", pluginMetrics.c_str());
-    }
     if (!mediametrics_selfRecord(item)) {
         ALOGE("Failed to self record framework metrics");
     }
     mediametrics_delete(item);
-    return serializedMetrics;
 }
 
-std::string DrmHal::reportPluginMetrics() const
+void DrmHal::reportPluginMetrics() const
 {
     Vector<uint8_t> metricsVector;
     String8 vendor;
     String8 description;
-    std::string metricsString;
     if (getPropertyStringInternal(String8("vendor"), vendor) == OK &&
             getPropertyStringInternal(String8("description"), description) == OK &&
             getPropertyByteArrayInternal(String8("metrics"), metricsVector) == OK) {
-        metricsString = toBase64StringNoPad(metricsVector.array(),
+        std::string metricsString = toBase64StringNoPad(metricsVector.array(),
                                                         metricsVector.size());
         status_t res = android::reportDrmPluginMetrics(metricsString, vendor,
                                                        description, mMetrics.GetAppUid());
@@ -1519,55 +1562,6 @@ std::string DrmHal::reportPluginMetrics() const
             ALOGE("Metrics were retrieved but could not be reported: %d", res);
         }
     }
-    return metricsString;
-}
-
-status_t DrmHal::requiresSecureDecoder(const char *mime, bool *required) const {
-    Mutex::Autolock autoLock(mLock);
-    if (mPluginV1_4 == NULL) {
-        return false;
-    }
-    auto hResult = mPluginV1_4->requiresSecureDecoderDefault(hidl_string(mime));
-    if (!hResult.isOk()) {
-        DrmUtils::LOG2BE("requiresSecureDecoder txn failed: %s", hResult.description().c_str());
-        return DEAD_OBJECT;
-    }
-    if (required) {
-        *required = hResult;
-    }
-    return OK;
-}
-
-status_t DrmHal::requiresSecureDecoder(const char *mime, DrmPlugin::SecurityLevel securityLevel,
-                                       bool *required) const {
-    Mutex::Autolock autoLock(mLock);
-    if (mPluginV1_4 == NULL) {
-        return false;
-    }
-    auto hLevel = toHidlSecurityLevel(securityLevel);
-    auto hResult = mPluginV1_4->requiresSecureDecoder(hidl_string(mime), hLevel);
-    if (!hResult.isOk()) {
-        DrmUtils::LOG2BE("requiresSecureDecoder txn failed: %s", hResult.description().c_str());
-        return DEAD_OBJECT;
-    }
-    if (required) {
-        *required = hResult;
-    }
-    return OK;
-}
-
-status_t DrmHal::setPlaybackId(Vector<uint8_t> const &sessionId, const char *playbackId) {
-    Mutex::Autolock autoLock(mLock);
-    if (mPluginV1_4 == NULL) {
-        return ERROR_UNSUPPORTED;
-    }
-    auto err = mPluginV1_4->setPlaybackId(toHidlVec(sessionId), hidl_string(playbackId));
-    return err.isOk() ? toStatusT(err) : DEAD_OBJECT;
-}
-
-status_t DrmHal::getLogMessages(Vector<drm::V1_4::LogMessage> &logs) const {
-    Mutex::Autolock autoLock(mLock);
-    return DrmUtils::GetLogMessages<drm::V1_4::IDrmPlugin>(mPlugin, logs);
 }
 
 }  // namespace android

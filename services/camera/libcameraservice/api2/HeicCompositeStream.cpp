@@ -16,7 +16,6 @@
 
 #define LOG_TAG "Camera3-HeicCompositeStream"
 #define ATRACE_TAG ATRACE_TAG_CAMERA
-#define ALIGN(x, mask) ( ((x) + (mask) - 1) & ~((mask) - 1) )
 //#define LOG_NDEBUG 0
 
 #include <linux/memfd.h>
@@ -37,7 +36,6 @@
 
 #include "common/CameraDeviceBase.h"
 #include "utils/ExifUtils.h"
-#include "utils/SessionConfigurationUtils.h"
 #include "HeicEncoderInfoManager.h"
 #include "HeicCompositeStream.h"
 
@@ -67,6 +65,7 @@ HeicCompositeStream::HeicCompositeStream(sp<CameraDeviceBase> device,
         mYuvBufferAcquired(false),
         mProducerListener(new ProducerListener()),
         mDequeuedOutputBufferCnt(0),
+        mLockedAppSegmentBufferCnt(0),
         mCodecOutputCounter(0),
         mQuality(-1),
         mGridTimestampUs(0),
@@ -116,10 +115,8 @@ bool HeicCompositeStream::isHeicCompositeStream(const sp<Surface> &surface) {
 
 status_t HeicCompositeStream::createInternalStreams(const std::vector<sp<Surface>>& consumers,
         bool /*hasDeferredConsumer*/, uint32_t width, uint32_t height, int format,
-        camera_stream_rotation_t rotation, int *id, const String8& physicalCameraId,
-        const std::unordered_set<int32_t> &sensorPixelModesUsed,
-        std::vector<int> *surfaceIds,
-        int /*streamSetId*/, bool /*isShared*/) {
+        camera3_stream_rotation_t rotation, int *id, const String8& physicalCameraId,
+        std::vector<int> *surfaceIds, int /*streamSetId*/, bool /*isShared*/) {
 
     sp<CameraDeviceBase> device = mDevice.promote();
     if (!device.get()) {
@@ -145,8 +142,7 @@ status_t HeicCompositeStream::createInternalStreams(const std::vector<sp<Surface
     mStaticInfo = device->info();
 
     res = device->createStream(mAppSegmentSurface, mAppSegmentMaxSize, 1, format,
-            kAppSegmentDataSpace, rotation, &mAppSegmentStreamId, physicalCameraId,
-            sensorPixelModesUsed,surfaceIds);
+            kAppSegmentDataSpace, rotation, &mAppSegmentStreamId, physicalCameraId, surfaceIds);
     if (res == OK) {
         mAppSegmentSurfaceId = (*surfaceIds)[0];
     } else {
@@ -182,7 +178,7 @@ status_t HeicCompositeStream::createInternalStreams(const std::vector<sp<Surface
     int srcStreamFmt = mUseGrid ? HAL_PIXEL_FORMAT_YCbCr_420_888 :
             HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
     res = device->createStream(mMainImageSurface, width, height, srcStreamFmt, kHeifDataSpace,
-            rotation, id, physicalCameraId, sensorPixelModesUsed, &sourceSurfaceId);
+            rotation, id, physicalCameraId, &sourceSurfaceId);
     if (res == OK) {
         mMainImageSurfaceId = sourceSurfaceId[0];
         mMainImageStreamId = *id;
@@ -514,8 +510,7 @@ status_t HeicCompositeStream::configureStream() {
 
     sp<camera3::StatusTracker> statusTracker = mStatusTracker.promote();
     if (statusTracker != nullptr) {
-        std::string name = std::string("HeicStream ") + std::to_string(getStreamId());
-        mStatusId = statusTracker->addComponent(name);
+        mStatusId = statusTracker->addComponent();
     }
 
     run("HeicCompositeStreamProc");
@@ -526,11 +521,13 @@ status_t HeicCompositeStream::configureStream() {
 status_t HeicCompositeStream::insertGbp(SurfaceMap* /*out*/outSurfaceMap,
         Vector<int32_t>* /*out*/outputStreamIds, int32_t* /*out*/currentStreamId) {
     if (outSurfaceMap->find(mAppSegmentStreamId) == outSurfaceMap->end()) {
+        (*outSurfaceMap)[mAppSegmentStreamId] = std::vector<size_t>();
         outputStreamIds->push_back(mAppSegmentStreamId);
     }
     (*outSurfaceMap)[mAppSegmentStreamId].push_back(mAppSegmentSurfaceId);
 
     if (outSurfaceMap->find(mMainImageStreamId) == outSurfaceMap->end()) {
+        (*outSurfaceMap)[mMainImageStreamId] = std::vector<size_t>();
         outputStreamIds->push_back(mMainImageStreamId);
     }
     (*outSurfaceMap)[mMainImageStreamId].push_back(mMainImageSurfaceId);
@@ -637,6 +634,7 @@ void HeicCompositeStream::compilePendingInputLocked() {
             mAppSegmentConsumer->unlockBuffer(imgBuffer);
         } else {
             mPendingInputFrames[frameNumber].appSegmentBuffer = imgBuffer;
+            mLockedAppSegmentBufferCnt++;
         }
         mInputAppSegmentBuffers.erase(it);
         mAppSegmentFrameNumbers.pop();
@@ -899,6 +897,10 @@ status_t HeicCompositeStream::processInputFrame(int64_t frameNumber,
                         strerror(-res), res);
                 return res;
             }
+        } else if (mLockedAppSegmentBufferCnt == kMaxAcquiredAppSegment) {
+            ALOGE("%s: Out-of-order app segment buffers reaches limit %u", __FUNCTION__,
+                    kMaxAcquiredAppSegment);
+            return INVALID_OPERATION;
         }
     }
 
@@ -1036,6 +1038,7 @@ status_t HeicCompositeStream::processAppSegment(int64_t frameNumber, InputFrame 
     mAppSegmentConsumer->unlockBuffer(inputFrame.appSegmentBuffer);
     inputFrame.appSegmentBuffer.data = nullptr;
     inputFrame.exifError = false;
+    mLockedAppSegmentBufferCnt--;
 
     return OK;
 }
@@ -1381,9 +1384,7 @@ status_t HeicCompositeStream::initializeCodec(uint32_t width, uint32_t height,
     mOutputWidth = width;
     mOutputHeight = height;
     mAppSegmentMaxSize = calcAppSegmentMaxSize(cameraDevice->info());
-    mMaxHeicBufferSize =
-        ALIGN(mOutputWidth, HeicEncoderInfoManager::kGridWidth) *
-        ALIGN(mOutputHeight, HeicEncoderInfoManager::kGridHeight) * 3 / 2 + mAppSegmentMaxSize;
+    mMaxHeicBufferSize = mOutputWidth * mOutputHeight * 3 / 2 + mAppSegmentMaxSize;
 
     return OK;
 }
