@@ -66,7 +66,7 @@ public:
     // Dynamic range profile
     int64_t mDynamicRangeProfile;
     // Stream use case
-    int mStreamUseCase;
+    int64_t mStreamUseCase;
 
     CameraStreamStats() :
             mWidth(0), mHeight(0), mFormat(0), mMaxPreviewFps(0), mDataSpace(0), mUsage(0),
@@ -136,6 +136,7 @@ public:
     // Whether the device runs into an error state
     bool mDeviceError;
     std::vector<CameraStreamStats> mStreamStats;
+    String16 mUserTag;
 
     // Constructors
     CameraSessionStats();

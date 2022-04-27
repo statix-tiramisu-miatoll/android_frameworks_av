@@ -1460,9 +1460,14 @@ status_t MediaCodec::init(const AString &name) {
     if (mDomain == DOMAIN_VIDEO) {
         // video codec needs dedicated looper
         if (mCodecLooper == NULL) {
+            status_t err = OK;
             mCodecLooper = new ALooper;
             mCodecLooper->setName("CodecLooper");
-            mCodecLooper->start(false, false, ANDROID_PRIORITY_AUDIO);
+            err = mCodecLooper->start(false, false, ANDROID_PRIORITY_AUDIO);
+            if (OK != err) {
+                ALOGE("Codec Looper failed to start");
+                return err;
+            }
         }
 
         mCodecLooper->registerHandler(mCodec);
@@ -2151,7 +2156,7 @@ static void mapFormat(AString componentName, const sp<AMessage> &format, const c
                       bool reverse) {
     AString mediaType;
     if (!format->findString("mime", &mediaType)) {
-        ALOGW("mapFormat: no mediaType information");
+        ALOGV("mapFormat: no mediaType information");
         return;
     }
     ALOGV("mapFormat: codec %s mediatype %s kind %s reverse %d", componentName.c_str(),
@@ -3048,8 +3053,9 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
                     CHECK(msg->findInt32("err", &err));
                     CHECK(msg->findInt32("actionCode", &actionCode));
 
-                    ALOGE("Codec reported err %#x, actionCode %d, while in state %d/%s",
-                            err, actionCode, mState, stateString(mState).c_str());
+                    ALOGE("Codec reported err %#x/%s, actionCode %d, while in state %d/%s",
+                                              err, StrMediaError(err).c_str(), actionCode,
+                                              mState, stateString(mState).c_str());
                     if (err == DEAD_OBJECT) {
                         mFlags |= kFlagSawMediaServerDie;
                         mFlags &= ~kFlagIsComponentAllocated;
@@ -3105,10 +3111,8 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
                         case STOPPING:
                         {
                             if (mFlags & kFlagSawMediaServerDie) {
-                                bool postPendingReplies = true;
                                 if (mState == RELEASING && !mReplyID) {
                                     ALOGD("Releasing asynchronously, so nothing to reply here.");
-                                    postPendingReplies = false;
                                 }
                                 // MediaServer died, there definitely won't
                                 // be a shutdown complete notification after
@@ -3121,8 +3125,11 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
                                 if (mState == RELEASING) {
                                     mComponentName.clear();
                                 }
-                                if (postPendingReplies) {
+                                if (mReplyID) {
                                     postPendingRepliesAndDeferredMessages(origin + ":dead");
+                                } else {
+                                    ALOGD("no pending replies: %s:dead following %s",
+                                          origin.c_str(), mLastReplyOrigin.c_str());
                                 }
                                 sendErrorResponse = false;
                             } else if (!mReplyID) {

@@ -118,14 +118,14 @@ status_t CameraStreamStats::readFromParcel(const android::Parcel* parcel) {
         return err;
     }
 
-    int dynamicRangeProfile = ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD;
-    if ((err = parcel->readInt32(&dynamicRangeProfile)) != OK) {
+    int64_t dynamicRangeProfile = ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD;
+    if ((err = parcel->readInt64(&dynamicRangeProfile)) != OK) {
         ALOGE("%s: Failed to read dynamic range profile type from parcel", __FUNCTION__);
         return err;
     }
 
-    int streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT;
-    if ((err = parcel->readInt32(&streamUseCase)) != OK) {
+    int64_t streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT;
+    if ((err = parcel->readInt64(&streamUseCase)) != OK) {
         ALOGE("%s: Failed to read stream use case from parcel", __FUNCTION__);
         return err;
     }
@@ -228,12 +228,12 @@ status_t CameraStreamStats::writeToParcel(android::Parcel* parcel) const {
         return err;
     }
 
-    if ((err = parcel->writeInt32(mDynamicRangeProfile)) != OK) {
+    if ((err = parcel->writeInt64(mDynamicRangeProfile)) != OK) {
         ALOGE("%s: Failed to write dynamic range profile type", __FUNCTION__);
         return err;
     }
 
-    if ((err = parcel->writeInt32(mStreamUseCase)) != OK) {
+    if ((err = parcel->writeInt64(mStreamUseCase)) != OK) {
         ALOGE("%s: Failed to write stream use case!", __FUNCTION__);
         return err;
     }
@@ -375,6 +375,12 @@ status_t CameraSessionStats::readFromParcel(const android::Parcel* parcel) {
         return err;
     }
 
+    String16 userTag;
+    if ((err = parcel->readString16(&userTag)) != OK) {
+        ALOGE("%s: Failed to read user tag!", __FUNCTION__);
+        return BAD_VALUE;
+    }
+
     mCameraId = id;
     mFacing = facing;
     mNewCameraState = newCameraState;
@@ -389,6 +395,7 @@ status_t CameraSessionStats::readFromParcel(const android::Parcel* parcel) {
     mResultErrorCount = resultErrorCount;
     mDeviceError = deviceError;
     mStreamStats = std::move(streamStats);
+    mUserTag = userTag;
 
     return OK;
 }
@@ -471,6 +478,10 @@ status_t CameraSessionStats::writeToParcel(android::Parcel* parcel) const {
         return err;
     }
 
+    if ((err = parcel->writeString16(mUserTag)) != OK) {
+        ALOGE("%s: Failed to write user tag!", __FUNCTION__);
+        return err;
+    }
     return OK;
 }
 
