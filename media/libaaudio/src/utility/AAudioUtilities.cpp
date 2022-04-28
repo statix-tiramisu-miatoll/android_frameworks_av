@@ -560,9 +560,12 @@ int32_t AAudioProperty_getWakeupDelayMicros() {
 }
 
 int32_t AAudioProperty_getMinimumSleepMicros() {
-    const int32_t minMicros = 20; // arbitrary
-    const int32_t defaultMicros = 200; // arbitrary
-    const int32_t maxMicros = 2000; // arbitrary
+    const int32_t minMicros = 1; // arbitrary
+    // Higher values can increase latency for moderate workloads.
+    // Short values can cause the CPU to short cycle if there is a bug in
+    // calculating the wakeup times.
+    const int32_t defaultMicros = 100; // arbitrary
+    const int32_t maxMicros = 200; // arbitrary
     int32_t prop = property_get_int32(AAUDIO_PROP_MINIMUM_SLEEP_USEC, defaultMicros);
     if (prop < minMicros) {
         ALOGW("AAudioProperty_getMinimumSleepMicros: clipped %d to %d", prop, minMicros);

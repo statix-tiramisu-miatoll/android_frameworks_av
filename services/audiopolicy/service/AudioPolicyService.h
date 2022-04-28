@@ -134,10 +134,8 @@ public:
                                                   int32_t* _aidl_return) override;
     binder::Status getStrategyForStream(AudioStreamType stream,
                                         int32_t* _aidl_return) override;
-    binder::Status getDevicesForStream(
-            AudioStreamType stream,
-            std::vector<AudioDeviceDescription>* _aidl_return) override;
     binder::Status getDevicesForAttributes(const media::AudioAttributesEx& attr,
+                                           bool forVolume,
                                            std::vector<AudioDevice>* _aidl_return) override;
     binder::Status getOutputForEffect(const media::EffectDescriptor& desc,
                                       int32_t* _aidl_return) override;
@@ -176,7 +174,7 @@ public:
     binder::Status listAudioPorts(media::AudioPortRole role, media::AudioPortType type,
                                   Int* count, std::vector<media::AudioPort>* ports,
                                   int32_t* _aidl_return) override;
-    binder::Status getAudioPort(const media::AudioPort& port,
+    binder::Status getAudioPort(int portId,
                                 media::AudioPort* _aidl_return) override;
     binder::Status createAudioPatch(const media::AudioPatch& patch, int32_t handle,
                                     int32_t* _aidl_return) override;
@@ -352,8 +350,12 @@ public:
      * by audio policy manager and attach/detach the spatializer effect accordingly.
      */
     void onCheckSpatializer() override;
-    void onCheckSpatializer_l();
+    void onCheckSpatializer_l() REQUIRES(mLock);
     void doOnCheckSpatializer();
+
+    void onUpdateActiveSpatializerTracks_l() REQUIRES(mLock);
+    void doOnUpdateActiveSpatializerTracks();
+
 
     void setEffectSuspended(int effectId,
                             audio_session_t sessionId,
@@ -448,7 +450,8 @@ private:
         void onUidGone(uid_t uid, bool disabled) override;
         void onUidIdle(uid_t uid, bool disabled) override;
         void onUidStateChanged(uid_t uid, int32_t procState, int64_t procStateSeq,
-                int32_t capability);
+                int32_t capability) override;
+        void onUidProcAdjChanged(uid_t uid) override;
 
         void addOverrideUid(uid_t uid, bool active) { updateOverrideUid(uid, active, true); }
         void removeOverrideUid(uid_t uid) { updateOverrideUid(uid, false, false); }
@@ -526,7 +529,8 @@ private:
             AUDIO_MODULES_UPDATE,
             ROUTING_UPDATED,
             UPDATE_UID_STATES,
-            CHECK_SPATIALIZER
+            CHECK_SPATIALIZER_OUTPUT, // verify if spatializer effect should be created or moved
+            UPDATE_ACTIVE_SPATIALIZER_TRACKS // Update active track counts on spalializer output
         };
 
         AudioCommandThread (String8 name, const wp<AudioPolicyService>& service);
@@ -576,6 +580,8 @@ private:
                     void        routingChangedCommand();
                     void        updateUidStatesCommand();
                     void        checkSpatializerCommand();
+                    void        updateActiveSpatializerTracksCommand();
+
                     void        insertCommand_l(AudioCommand *command, int delayMs = 0);
     private:
         class AudioCommandData;
@@ -965,12 +971,14 @@ private:
                 AudioPlaybackClient(const audio_attributes_t attributes,
                       const audio_io_handle_t io, AttributionSourceState attributionSource,
                             const audio_session_t session, audio_port_handle_t portId,
-                            audio_port_handle_t deviceId, audio_stream_type_t stream) :
+                            audio_port_handle_t deviceId, audio_stream_type_t stream,
+                            bool isSpatialized) :
                     AudioClient(attributes, io, attributionSource, session, portId,
-                        deviceId), stream(stream) {}
+                        deviceId), stream(stream), isSpatialized(isSpatialized)  {}
                 ~AudioPlaybackClient() override = default;
 
         const audio_stream_type_t stream;
+        const bool isSpatialized;
     };
 
     void getPlaybackClientAndEffects(audio_port_handle_t portId,
@@ -999,6 +1007,17 @@ private:
     status_t dumpPermissionDenial(int fd);
     void loadAudioPolicyManager();
     void unloadAudioPolicyManager();
+
+    /**
+     * Returns the number of active audio tracks on the specified output mixer.
+     * The query can be specified to only include spatialized audio tracks or consider
+     * all tracks.
+     * @param output the I/O handle of the output mixer to consider
+     * @param spatializedOnly true if only spatialized tracks should be considered
+     * @return the number of active tracks.
+     */
+    size_t countActiveClientsOnOutput_l(
+        audio_io_handle_t output, bool spatializedOnly = true) REQUIRES(mLock);
 
     mutable Mutex mLock;    // prevents concurrent access to AudioPolicy manager functions changing
                             // device connection state  or routing

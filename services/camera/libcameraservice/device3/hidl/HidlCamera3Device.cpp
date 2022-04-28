@@ -70,7 +70,7 @@ using android::hardware::camera::metadata::V3_8::CameraMetadataEnumAndroidScaler
 namespace android {
 
 CameraMetadataEnumAndroidRequestAvailableDynamicRangeProfilesMap
-HidlCamera3Device::mapToHidlDynamicProfile(int dynamicRangeProfile) {
+HidlCamera3Device::mapToHidlDynamicProfile(int64_t dynamicRangeProfile) {
     return static_cast<CameraMetadataEnumAndroidRequestAvailableDynamicRangeProfilesMap>(
             dynamicRangeProfile);
 }
@@ -369,7 +369,7 @@ hardware::Return<void> HidlCamera3Device::processCaptureResult_3_4(
         mNumPartialResults, mVendorTagId, mDeviceInfo, mPhysicalDeviceInfoMap,
         mDistortionMappers, mZoomRatioMappers, mRotateAndCropMappers,
         mTagMonitor, mInputStream, mOutputStreams, mSessionStatsBuilder, listener, *this, *this,
-        *mInterface, mLegacyClient}, mResultMetadataQueue
+        *mInterface, mLegacyClient, mMinExpectedDuration}, mResultMetadataQueue
     };
 
     //HidlCaptureOutputStates hidlStates {
@@ -431,7 +431,7 @@ hardware::Return<void> HidlCamera3Device::processCaptureResult(
         mNumPartialResults, mVendorTagId, mDeviceInfo, mPhysicalDeviceInfoMap,
         mDistortionMappers, mZoomRatioMappers, mRotateAndCropMappers,
         mTagMonitor, mInputStream, mOutputStreams, mSessionStatsBuilder, listener, *this, *this,
-        *mInterface, mLegacyClient}, mResultMetadataQueue
+        *mInterface, mLegacyClient, mMinExpectedDuration}, mResultMetadataQueue
     };
 
     for (const auto& result : results) {
@@ -483,7 +483,7 @@ hardware::Return<void> HidlCamera3Device::notifyHelper(
         mNumPartialResults, mVendorTagId, mDeviceInfo, mPhysicalDeviceInfoMap,
         mDistortionMappers, mZoomRatioMappers, mRotateAndCropMappers,
         mTagMonitor, mInputStream, mOutputStreams, mSessionStatsBuilder, listener, *this, *this,
-        *mInterface, mLegacyClient}, mResultMetadataQueue
+        *mInterface, mLegacyClient, mMinExpectedDuration}, mResultMetadataQueue
     };
     for (const auto& msg : msgs) {
         camera3::notify(states, msg);
@@ -966,13 +966,13 @@ status_t HidlCamera3Device::HidlHalInterface::configureStreams(
         if ((src->dynamic_range_profile !=
                     ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD) &&
                 (mHidlSession_3_8 == nullptr)) {
-            ALOGE("%s: Camera device doesn't support non-standard dynamic range profiles: %d",
+            ALOGE("%s: Camera device doesn't support non-standard dynamic range profiles: %" PRIx64,
                     __FUNCTION__, src->dynamic_range_profile);
             return BAD_VALUE;
         }
         if (src->use_case != ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT &&
                 mHidlSession_3_8 == nullptr) {
-            ALOGE("%s: Camera device doesn't support non-default stream use case %d!",
+            ALOGE("%s: Camera device doesn't support non-default stream use case %" PRId64 "!",
                     __FUNCTION__, src->use_case);
             return BAD_VALUE;
         }
