@@ -376,32 +376,24 @@ status_t Camera3OutputStream::returnBufferCheckedLocked(
             dumpImageToDisk(timestamp, anwBuffer, anwReleaseFence);
         }
 
-        nsecs_t t = mPreviewFrameScheduler != nullptr ? readoutTimestamp : timestamp;
-        t -= mTimestampOffset;
-        if (mPreviewFrameScheduler != nullptr) {
-            res = mPreviewFrameScheduler->queuePreviewBuffer(t, transform,
-                    anwBuffer, anwReleaseFence);
-            if (res != OK) {
-                ALOGE("%s: Stream %d: Error queuing buffer to preview buffer scheduler: %s (%d)",
-                        __FUNCTION__, mId, strerror(-res), res);
-                return res;
-            }
-        } else {
-            setTransform(transform, true/*mayChangeMirror*/);
-            res = native_window_set_buffers_timestamp(mConsumer.get(), t);
-            if (res != OK) {
-                ALOGE("%s: Stream %d: Error setting timestamp: %s (%d)",
-                      __FUNCTION__, mId, strerror(-res), res);
-                return res;
-            }
+        nsecs_t captureTime = (mSyncToDisplay ? readoutTimestamp : timestamp) - mTimestampOffset;
+        nsecs_t presentTime = mSyncToDisplay ?
+                syncTimestampToDisplayLocked(captureTime) : captureTime;
 
-            queueHDRMetadata(anwBuffer->handle, currentConsumer, dynamic_range_profile);
+        setTransform(transform, true/*mayChangeMirror*/);
+        res = native_window_set_buffers_timestamp(mConsumer.get(), presentTime);
+        if (res != OK) {
+            ALOGE("%s: Stream %d: Error setting timestamp: %s (%d)",
+                  __FUNCTION__, mId, strerror(-res), res);
+            return res;
+        }
 
-            res = queueBufferToConsumer(currentConsumer, anwBuffer, anwReleaseFence, surface_ids);
-            if (shouldLogError(res, state)) {
-                ALOGE("%s: Stream %d: Error queueing buffer to native window:"
-                      " %s (%d)", __FUNCTION__, mId, strerror(-res), res);
-            }
+        queueHDRMetadata(anwBuffer->handle, currentConsumer, dynamic_range_profile);
+
+        res = queueBufferToConsumer(currentConsumer, anwBuffer, anwReleaseFence, surface_ids);
+        if (shouldLogError(res, state)) {
+            ALOGE("%s: Stream %d: Error queueing buffer to native window:"
+                  " %s (%d)", __FUNCTION__, mId, strerror(-res), res);
         }
     }
     mLock.lock();
@@ -476,7 +468,7 @@ status_t Camera3OutputStream::configureQueueLocked() {
         return res;
     }
 
-    if ((res = configureConsumerQueueLocked(true /*allowPreviewScheduler*/)) != OK) {
+    if ((res = configureConsumerQueueLocked(true /*allowDisplaySync*/)) != OK) {
         return res;
     }
 
@@ -500,7 +492,7 @@ status_t Camera3OutputStream::configureQueueLocked() {
     return OK;
 }
 
-status_t Camera3OutputStream::configureConsumerQueueLocked(bool allowPreviewScheduler) {
+status_t Camera3OutputStream::configureConsumerQueueLocked(bool allowDisplaySync) {
     status_t res;
 
     mTraceFirstBuffer = true;
@@ -590,16 +582,17 @@ status_t Camera3OutputStream::configureConsumerQueueLocked(bool allowPreviewSche
     int timestampBase = getTimestampBase();
     bool isDefaultTimeBase = (timestampBase ==
             OutputConfiguration::TIMESTAMP_BASE_DEFAULT);
-    if (allowPreviewScheduler)  {
+    if (allowDisplaySync)  {
         // We cannot distinguish between a SurfaceView and an ImageReader of
-        // preview buffer format. The PreviewFrameScheduler needs to handle both.
+        // preview buffer format. Frames are synchronized to display in both
+        // cases.
         bool forceChoreographer = (timestampBase ==
                 OutputConfiguration::TIMESTAMP_BASE_CHOREOGRAPHER_SYNCED);
         bool defaultToChoreographer = (isDefaultTimeBase && isConsumedByHWComposer() &&
                 !property_get_bool("camera.disable_preview_scheduler", false));
         if (forceChoreographer || defaultToChoreographer) {
-            mPreviewFrameScheduler = std::make_unique<PreviewFrameScheduler>(*this, mConsumer);
-            mTotalBufferCount += PreviewFrameScheduler::kQueueDepthWatermark;
+            mSyncToDisplay = true;
+            mTotalBufferCount += kDisplaySyncExtraBuffer;
         }
     }
 
@@ -1244,6 +1237,11 @@ status_t Camera3OutputStream::setBatchSize(size_t batchSize) {
     return OK;
 }
 
+void Camera3OutputStream::onMinDurationChanged(nsecs_t duration) {
+    Mutex::Autolock l(mLock);
+    mMinExpectedDuration = duration;
+}
+
 void Camera3OutputStream::returnPrefetchedBuffersLocked() {
     std::vector<Surface::BatchBuffer> batchedBuffers;
 
@@ -1261,9 +1259,61 @@ void Camera3OutputStream::returnPrefetchedBuffersLocked() {
     }
 }
 
-bool Camera3OutputStream::shouldLogError(status_t res) {
-    Mutex::Autolock l(mLock);
-    return shouldLogError(res, mState);
+nsecs_t Camera3OutputStream::syncTimestampToDisplayLocked(nsecs_t t) {
+    ParcelableVsyncEventData parcelableVsyncEventData;
+    auto res = mDisplayEventReceiver.getLatestVsyncEventData(&parcelableVsyncEventData);
+    if (res != OK) {
+        ALOGE("%s: Stream %d: Error getting latest vsync event data: %s (%d)",
+                __FUNCTION__, mId, strerror(-res), res);
+        mLastCaptureTime = t;
+        mLastPresentTime = t;
+        return t;
+    }
+
+    const VsyncEventData& vsyncEventData = parcelableVsyncEventData.vsync;
+    nsecs_t currentTime = systemTime();
+
+    // Reset capture to present time offset if more than 1 second
+    // between frames.
+    if (t - mLastCaptureTime > kSpacingResetIntervalNs) {
+        for (size_t i = 0; i < VsyncEventData::kFrameTimelinesLength; i++) {
+            if (vsyncEventData.frameTimelines[i].deadlineTimestamp >= currentTime) {
+                mCaptureToPresentOffset =
+                    vsyncEventData.frameTimelines[i].expectedPresentationTime - t;
+                break;
+            }
+        }
+    }
+
+    nsecs_t idealPresentT = t + mCaptureToPresentOffset;
+    nsecs_t expectedPresentT = mLastPresentTime;
+    nsecs_t minDiff = INT64_MAX;
+    // Derive minimum intervals between presentation times based on minimal
+    // expected duration.
+    size_t minVsyncs = (mMinExpectedDuration + vsyncEventData.frameInterval - 1) /
+            vsyncEventData.frameInterval - 1;
+    nsecs_t minInterval = minVsyncs * vsyncEventData.frameInterval + kTimelineThresholdNs;
+    // Find best timestamp in the vsync timeline:
+    // - closest to the ideal present time,
+    // - deadline timestamp is greater than the current time, and
+    // - the candidate present time is at least minInterval in the future
+    //   compared to last present time.
+    for (const auto& vsyncTime : vsyncEventData.frameTimelines) {
+        if (std::abs(vsyncTime.expectedPresentationTime - idealPresentT) < minDiff &&
+                vsyncTime.deadlineTimestamp >= currentTime &&
+                vsyncTime.expectedPresentationTime > mLastPresentTime + minInterval) {
+            expectedPresentT = vsyncTime.expectedPresentationTime;
+            minDiff = std::abs(vsyncTime.expectedPresentationTime - idealPresentT);
+        }
+    }
+    mLastCaptureTime = t;
+    mLastPresentTime = expectedPresentT;
+
+    // Move the expected presentation time back by 1/3 of frame interval to
+    // mitigate the time drift. Due to time drift, if we directly use the
+    // expected presentation time, often times 2 expected presentation time
+    // falls into the same VSYNC interval.
+    return expectedPresentT - vsyncEventData.frameInterval/3;
 }
 
 }; // namespace camera3

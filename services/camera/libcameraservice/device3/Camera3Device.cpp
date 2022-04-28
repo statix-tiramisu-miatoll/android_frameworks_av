@@ -2649,7 +2649,7 @@ void Camera3Device::setErrorStateLockedV(const char *fmt, va_list args) {
 
 status_t Camera3Device::registerInFlight(uint32_t frameNumber,
         int32_t numBuffers, CaptureResultExtras resultExtras, bool hasInput,
-        bool hasAppCallback, nsecs_t maxExpectedDuration,
+        bool hasAppCallback, nsecs_t minExpectedDuration, nsecs_t maxExpectedDuration,
         const std::set<std::set<String8>>& physicalCameraIds,
         bool isStillCapture, bool isZslCapture, bool rotateAndCropAuto,
         const std::set<std::string>& cameraIdsWithZoom,
@@ -2659,8 +2659,9 @@ status_t Camera3Device::registerInFlight(uint32_t frameNumber,
 
     ssize_t res;
     res = mInFlightMap.add(frameNumber, InFlightRequest(numBuffers, resultExtras, hasInput,
-            hasAppCallback, maxExpectedDuration, physicalCameraIds, isStillCapture, isZslCapture,
-            rotateAndCropAuto, cameraIdsWithZoom, requestTimeNs, outputSurfaces));
+            hasAppCallback, minExpectedDuration, maxExpectedDuration, physicalCameraIds,
+            isStillCapture, isZslCapture, rotateAndCropAuto, cameraIdsWithZoom, requestTimeNs,
+            outputSurfaces));
     if (res < 0) return res;
 
     if (mInFlightMap.size() == 1) {
@@ -2856,6 +2857,7 @@ Camera3Device::RequestThread::RequestThread(wp<Camera3Device> parent,
         mInterface(interface),
         mListener(nullptr),
         mId(getId(parent)),
+        mRequestClearing(false),
         mFirstRepeating(false),
         mReconfigured(false),
         mDoPause(false),
@@ -3089,6 +3091,7 @@ status_t Camera3Device::RequestThread::clear(
         *lastFrameNumber = mRepeatingLastFrameNumber;
     }
     mRepeatingLastFrameNumber = hardware::camera2::ICameraDeviceUser::NO_IN_FLIGHT_REPEATING_FRAMES;
+    mRequestClearing = true;
     mRequestSignal.signal();
     return OK;
 }
@@ -3216,13 +3219,16 @@ bool Camera3Device::RequestThread::sendRequestsBatch() {
     return true;
 }
 
-nsecs_t Camera3Device::RequestThread::calculateMaxExpectedDuration(const camera_metadata_t *request) {
-    nsecs_t maxExpectedDuration = kDefaultExpectedDuration;
+std::pair<nsecs_t, nsecs_t> Camera3Device::RequestThread::calculateExpectedDurationRange(
+        const camera_metadata_t *request) {
+    std::pair<nsecs_t, nsecs_t> expectedRange(
+            InFlightRequest::kDefaultMinExpectedDuration,
+            InFlightRequest::kDefaultMaxExpectedDuration);
     camera_metadata_ro_entry_t e = camera_metadata_ro_entry_t();
     find_camera_metadata_ro_entry(request,
             ANDROID_CONTROL_AE_MODE,
             &e);
-    if (e.count == 0) return maxExpectedDuration;
+    if (e.count == 0) return expectedRange;
 
     switch (e.data.u8[0]) {
         case ANDROID_CONTROL_AE_MODE_OFF:
@@ -3230,13 +3236,15 @@ nsecs_t Camera3Device::RequestThread::calculateMaxExpectedDuration(const camera_
                     ANDROID_SENSOR_EXPOSURE_TIME,
                     &e);
             if (e.count > 0) {
-                maxExpectedDuration = e.data.i64[0];
+                expectedRange.first = e.data.i64[0];
+                expectedRange.second = expectedRange.first;
             }
             find_camera_metadata_ro_entry(request,
                     ANDROID_SENSOR_FRAME_DURATION,
                     &e);
             if (e.count > 0) {
-                maxExpectedDuration = std::max(e.data.i64[0], maxExpectedDuration);
+                expectedRange.first = std::max(e.data.i64[0], expectedRange.first);
+                expectedRange.second = expectedRange.first;
             }
             break;
         default:
@@ -3244,12 +3252,13 @@ nsecs_t Camera3Device::RequestThread::calculateMaxExpectedDuration(const camera_
                     ANDROID_CONTROL_AE_TARGET_FPS_RANGE,
                     &e);
             if (e.count > 1) {
-                maxExpectedDuration = 1e9 / e.data.u8[0];
+                expectedRange.first = 1e9 / e.data.i32[1];
+                expectedRange.second = 1e9 / e.data.i32[0];
             }
             break;
     }
 
-    return maxExpectedDuration;
+    return expectedRange;
 }
 
 bool Camera3Device::RequestThread::skipHFRTargetFPSUpdate(int32_t tag,
@@ -3864,11 +3873,13 @@ status_t Camera3Device::RequestThread::prepareHalRequests() {
                 isZslCapture = true;
             }
         }
+        auto expectedDurationRange = calculateExpectedDurationRange(settings);
         res = parent->registerInFlight(halRequest->frame_number,
                 totalNumBuffers, captureRequest->mResultExtras,
                 /*hasInput*/halRequest->input_buffer != NULL,
                 hasCallback,
-                calculateMaxExpectedDuration(settings),
+                /*min*/expectedDurationRange.first,
+                /*max*/expectedDurationRange.second,
                 requestedPhysicalCameras, isStillCapture, isZslCapture,
                 captureRequest->mRotateAndCropAuto, mPrevCameraIdsWithZoom,
                 (mUseHalBufManager) ? uniqueSurfaceIdMap :
@@ -4209,7 +4220,9 @@ sp<Camera3Device::CaptureRequest>
             break;
         }
 
-        res = mRequestSignal.waitRelative(mRequestLock, kRequestTimeout);
+        if (!mRequestClearing) {
+            res = mRequestSignal.waitRelative(mRequestLock, kRequestTimeout);
+        }
 
         if ((mRequestQueue.empty() && mRepeatingRequests.empty()) ||
                 exitPending()) {
@@ -4231,6 +4244,7 @@ sp<Camera3Device::CaptureRequest>
                 if (parent != nullptr) {
                     parent->mRequestBufferSM.onRequestThreadPaused();
                 }
+                mRequestClearing = false;
             }
             // Stop waiting for now and let thread management happen
             return NULL;
