@@ -286,7 +286,8 @@ public:
                                      audio_output_flags_t flags,
                                      audio_port_handle_t *selectedDeviceId,
                                      audio_port_handle_t *portId,
-                                     std::vector<audio_io_handle_t> *secondaryOutputs);
+                                     std::vector<audio_io_handle_t> *secondaryOutputs,
+                                     bool *isSpatialized);
     static status_t startOutput(audio_port_handle_t portId);
     static status_t stopOutput(audio_port_handle_t portId);
     static void releaseOutput(audio_port_handle_t portId);
@@ -328,9 +329,9 @@ public:
     static status_t getMinVolumeIndexForAttributes(const audio_attributes_t &attr, int &index);
 
     static product_strategy_t getStrategyForStream(audio_stream_type_t stream);
-    static DeviceTypeSet getDevicesForStream(audio_stream_type_t stream);
     static status_t getDevicesForAttributes(const AudioAttributes &aa,
-                                            AudioDeviceTypeAddrVector *devices);
+                                            AudioDeviceTypeAddrVector *devices,
+                                            bool forVolume);
 
     static audio_io_handle_t getOutputForEffect(const effect_descriptor_t *desc);
     static status_t registerEffect(const effect_descriptor_t *desc,
@@ -374,7 +375,8 @@ public:
                                    struct audio_port_v7 *ports,
                                    unsigned int *generation);
 
-    /* Get attributes for a given audio port */
+    /* Get attributes for a given audio port. On input, the port
+     * only needs the 'id' field to be filled in. */
     static status_t getAudioPort(struct audio_port_v7 *port);
 
     /* Create an audio patch between several source and sink ports */
