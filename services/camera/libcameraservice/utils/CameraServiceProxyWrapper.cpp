@@ -66,10 +66,11 @@ void CameraServiceProxyWrapper::CameraSessionStatsWrapper::onStreamConfigured(
     }
 }
 
-void CameraServiceProxyWrapper::CameraSessionStatsWrapper::onActive() {
+void CameraServiceProxyWrapper::CameraSessionStatsWrapper::onActive(float maxPreviewFps) {
     Mutex::Autolock l(mLock);
 
     mSessionStats.mNewCameraState = CameraSessionStats::CAMERA_STATE_ACTIVE;
+    mSessionStats.mMaxPreviewFps = maxPreviewFps;
     updateProxyDeviceState(mSessionStats);
 
     // Reset mCreationDuration to -1 to distinguish between 1st session
@@ -79,6 +80,7 @@ void CameraServiceProxyWrapper::CameraSessionStatsWrapper::onActive() {
 
 void CameraServiceProxyWrapper::CameraSessionStatsWrapper::onIdle(
         int64_t requestCount, int64_t resultErrorCount, bool deviceError,
+        const std::string& userTag,
         const std::vector<hardware::CameraStreamStats>& streamStats) {
     Mutex::Autolock l(mLock);
 
@@ -86,6 +88,7 @@ void CameraServiceProxyWrapper::CameraSessionStatsWrapper::onIdle(
     mSessionStats.mRequestCount = requestCount;
     mSessionStats.mResultErrorCount = resultErrorCount;
     mSessionStats.mDeviceError = deviceError;
+    mSessionStats.mUserTag = String16(userTag.c_str());
     mSessionStats.mStreamStats = streamStats;
     updateProxyDeviceState(mSessionStats);
 
@@ -158,7 +161,7 @@ void CameraServiceProxyWrapper::logStreamConfigured(const String8& id,
     sessionStats->onStreamConfigured(operatingMode, internalConfig, latencyMs);
 }
 
-void CameraServiceProxyWrapper::logActive(const String8& id) {
+void CameraServiceProxyWrapper::logActive(const String8& id, float maxPreviewFps) {
     std::shared_ptr<CameraSessionStatsWrapper> sessionStats;
     {
         Mutex::Autolock l(mLock);
@@ -171,11 +174,12 @@ void CameraServiceProxyWrapper::logActive(const String8& id) {
     }
 
     ALOGV("%s: id %s", __FUNCTION__, id.c_str());
-    sessionStats->onActive();
+    sessionStats->onActive(maxPreviewFps);
 }
 
 void CameraServiceProxyWrapper::logIdle(const String8& id,
         int64_t requestCount, int64_t resultErrorCount, bool deviceError,
+        const std::string& userTag,
         const std::vector<hardware::CameraStreamStats>& streamStats) {
     std::shared_ptr<CameraSessionStatsWrapper> sessionStats;
     {
@@ -189,8 +193,9 @@ void CameraServiceProxyWrapper::logIdle(const String8& id,
         return;
     }
 
-    ALOGV("%s: id %s, requestCount %" PRId64 ", resultErrorCount %" PRId64 ", deviceError %d",
-            __FUNCTION__, id.c_str(), requestCount, resultErrorCount, deviceError);
+    ALOGV("%s: id %s, requestCount %" PRId64 ", resultErrorCount %" PRId64 ", deviceError %d"
+            ", userTag %s", __FUNCTION__, id.c_str(), requestCount, resultErrorCount,
+            deviceError, userTag.c_str());
     for (size_t i = 0; i < streamStats.size(); i++) {
         ALOGV("%s: streamStats[%zu]: w %d h %d, requestedCount %" PRId64 ", dropCount %"
                 PRId64 ", startTimeMs %d" ,
@@ -199,7 +204,7 @@ void CameraServiceProxyWrapper::logIdle(const String8& id,
                 streamStats[i].mStartLatencyMs);
     }
 
-    sessionStats->onIdle(requestCount, resultErrorCount, deviceError, streamStats);
+    sessionStats->onIdle(requestCount, resultErrorCount, deviceError, userTag, streamStats);
 }
 
 void CameraServiceProxyWrapper::logOpen(const String8& id, int facing,

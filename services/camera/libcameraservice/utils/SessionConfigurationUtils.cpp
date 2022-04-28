@@ -223,7 +223,7 @@ bool is10bitCompatibleFormat(int32_t format) {
     }
 }
 
-bool isDynamicRangeProfileSupported(int dynamicRangeProfile, const CameraMetadata& staticInfo) {
+bool isDynamicRangeProfileSupported(int64_t dynamicRangeProfile, const CameraMetadata& staticInfo) {
     if (dynamicRangeProfile == ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD) {
         // Supported by default
         return true;
@@ -256,8 +256,8 @@ bool isDynamicRangeProfileSupported(int dynamicRangeProfile, const CameraMetadat
         case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_8B_HDR_REF:
         case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_8B_HDR_REF_PO:
             entry = staticInfo.find(ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP);
-            for (size_t i = 0; i < entry.count; i += 2) {
-                if (dynamicRangeProfile == entry.data.i32[i]) {
+            for (size_t i = 0; i < entry.count; i += 3) {
+                if (dynamicRangeProfile == entry.data.i64[i]) {
                     return true;
                 }
             }
@@ -271,7 +271,7 @@ bool isDynamicRangeProfileSupported(int dynamicRangeProfile, const CameraMetadat
 }
 
 //check if format is 10-bit compatible
-bool is10bitDynamicRangeProfile(int32_t dynamicRangeProfile) {
+bool is10bitDynamicRangeProfile(int64_t dynamicRangeProfile) {
     switch (dynamicRangeProfile) {
         case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HDR10_PLUS:
         case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HDR10:
@@ -313,7 +313,7 @@ bool isPublicFormat(int32_t format)
     }
 }
 
-bool isStreamUseCaseSupported(int streamUseCase,
+bool isStreamUseCaseSupported(int64_t streamUseCase,
         const CameraMetadata &deviceInfo) {
     camera_metadata_ro_entry_t availableStreamUseCases =
             deviceInfo.find(ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES);
@@ -324,7 +324,7 @@ bool isStreamUseCaseSupported(int streamUseCase,
     }
 
     for (size_t i = 0; i < availableStreamUseCases.count; i++) {
-        if (availableStreamUseCases.data.i32[i] == streamUseCase) {
+        if (availableStreamUseCases.data.i64[i] == streamUseCase) {
             return true;
         }
     }
@@ -335,8 +335,8 @@ binder::Status createSurfaceFromGbp(
         OutputStreamInfo& streamInfo, bool isStreamInfoValid,
         sp<Surface>& surface, const sp<IGraphicBufferProducer>& gbp,
         const String8 &logicalCameraId, const CameraMetadata &physicalCameraMetadata,
-        const std::vector<int32_t> &sensorPixelModesUsed, int dynamicRangeProfile,
-        int streamUseCase, int timestampBase, int mirrorMode) {
+        const std::vector<int32_t> &sensorPixelModesUsed, int64_t dynamicRangeProfile,
+        int64_t streamUseCase, int timestampBase, int mirrorMode) {
     // bufferProducer must be non-null
     if (gbp == nullptr) {
         String8 msg = String8::format("Camera %s: Surface is NULL", logicalCameraId.string());
@@ -436,22 +436,23 @@ binder::Status createSurfaceFromGbp(
     }
     if (!SessionConfigurationUtils::isDynamicRangeProfileSupported(dynamicRangeProfile,
                 physicalCameraMetadata)) {
-        String8 msg = String8::format("Camera %s: Dynamic range profile 0x%x not supported,"
-                " failed to create output stream", logicalCameraId.string(), dynamicRangeProfile);
+        String8 msg = String8::format("Camera %s: Dynamic range profile 0x%" PRIx64
+                " not supported,failed to create output stream", logicalCameraId.string(),
+                dynamicRangeProfile);
         ALOGE("%s: %s", __FUNCTION__, msg.string());
         return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (SessionConfigurationUtils::is10bitDynamicRangeProfile(dynamicRangeProfile) &&
             !SessionConfigurationUtils::is10bitCompatibleFormat(format)) {
         String8 msg = String8::format("Camera %s: No 10-bit supported stream configurations with "
-                "format %#x defined and profile %#x, failed to create output stream",
+                "format %#x defined and profile %" PRIx64 ", failed to create output stream",
                 logicalCameraId.string(), format, dynamicRangeProfile);
         ALOGE("%s: %s", __FUNCTION__, msg.string());
         return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
     if (!SessionConfigurationUtils::isStreamUseCaseSupported(streamUseCase,
             physicalCameraMetadata)) {
-        String8 msg = String8::format("Camera %s: stream use case %d not supported,"
+        String8 msg = String8::format("Camera %s: stream use case %" PRId64 " not supported,"
                 " failed to create output stream", logicalCameraId.string(), streamUseCase);
         ALOGE("%s: %s", __FUNCTION__, msg.string());
         return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT, msg.string());
@@ -695,7 +696,7 @@ convertToHALStreamCombination(
         bool deferredConsumer = it.isDeferred();
         String8 physicalCameraId = String8(it.getPhysicalCameraId());
 
-        int dynamicRangeProfile = it.getDynamicRangeProfile();
+        int64_t dynamicRangeProfile = it.getDynamicRangeProfile();
         std::vector<int32_t> sensorPixelModesUsed = it.getSensorPixelModesUsed();
         const CameraMetadata &physicalDeviceInfo = getMetadata(physicalCameraId,
                 overrideForPerfClass);
@@ -717,7 +718,7 @@ convertToHALStreamCombination(
             return res;
         }
 
-        int streamUseCase = it.getStreamUseCase();
+        int64_t streamUseCase = it.getStreamUseCase();
         int timestampBase = it.getTimestampBase();
         int mirrorMode = it.getMirrorMode();
         if (deferredConsumer) {
@@ -1033,13 +1034,13 @@ bool convertHALStreamCombinationFromV38ToV37(
         const hardware::camera::device::V3_8::StreamConfiguration &streamConfigV38) {
     streamConfigV37.streams.resize(streamConfigV38.streams.size());
     for (size_t i = 0; i < streamConfigV38.streams.size(); i++) {
-        if (static_cast<int32_t>(streamConfigV38.streams[i].dynamicRangeProfile) !=
+        if (static_cast<int64_t>(streamConfigV38.streams[i].dynamicRangeProfile) !=
                 ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD) {
             // ICameraDevice older than 3.8 doesn't support 10-bit dynamic range profiles
             // image
             return false;
         }
-        if (static_cast<int32_t>(streamConfigV38.streams[i].useCase) !=
+        if (static_cast<int64_t>(streamConfigV38.streams[i].useCase) !=
                 ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT) {
             // ICameraDevice older than 3.8 doesn't support stream use case
             return false;

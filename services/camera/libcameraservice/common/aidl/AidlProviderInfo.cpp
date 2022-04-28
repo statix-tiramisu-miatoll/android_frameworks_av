@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,10 +45,32 @@ using HalDeviceStatusType = aidl::android::hardware::camera::common::CameraDevic
 using ICameraProvider = aidl::android::hardware::camera::provider::ICameraProvider;
 using StatusListener = CameraProviderManager::StatusListener;
 
+static status_t mapExceptionCodeToStatusT(binder_exception_t binderException) {
+    switch (binderException) {
+        case EX_NONE:
+            return OK;
+        case EX_ILLEGAL_ARGUMENT:
+        case EX_NULL_POINTER:
+        case EX_BAD_PARCELABLE:
+        case EX_ILLEGAL_STATE:
+            return BAD_VALUE;
+        case EX_UNSUPPORTED_OPERATION:
+            return INVALID_OPERATION;
+        case EX_TRANSACTION_FAILED:
+            return DEAD_OBJECT;
+        default:
+            return UNKNOWN_ERROR;
+    }
+}
+
 status_t AidlProviderInfo::mapToStatusT(const ndk::ScopedAStatus& s) {
     using Status = aidl::android::hardware::camera::common::Status;
+    auto exceptionCode = s.getExceptionCode();
+    if (exceptionCode != EX_SERVICE_SPECIFIC) {
+        return mapExceptionCodeToStatusT(exceptionCode);
+    }
     Status st = static_cast<Status>(s.getServiceSpecificError());
-    switch(st) {
+    switch (st) {
         case Status::OK:
             return OK;
         case Status::ILLEGAL_ARGUMENT:
@@ -57,8 +79,6 @@ status_t AidlProviderInfo::mapToStatusT(const ndk::ScopedAStatus& s) {
             return -EBUSY;
         case Status::MAX_CAMERAS_IN_USE:
             return -EUSERS;
-        case Status::METHOD_NOT_SUPPORTED:
-            return UNKNOWN_TRANSACTION;
         case Status::OPERATION_NOT_SUPPORTED:
             return INVALID_OPERATION;
         case Status::CAMERA_DISCONNECTED:
@@ -660,32 +680,24 @@ AidlProviderInfo::AidlDeviceInfo3::startDeviceInterface() {
 }
 
 status_t AidlProviderInfo::AidlDeviceInfo3::dumpState(int fd) {
-    native_handle_t* handle = native_handle_create(1,0);
-    handle->data[0] = fd;
     const std::shared_ptr<camera::device::ICameraDevice> interface = startDeviceInterface();
     if (interface == nullptr) {
         return DEAD_OBJECT;
     }
-    ::ndk::ScopedFileDescriptor sFd;
-    sFd.set(fcntl(fd, F_DUPFD_CLOEXEC, 0));
-    auto ret = interface->dumpState(sFd);
-    native_handle_delete(handle);
-    if (!ret.isOk()) {
-        return mapToStatusT(ret);
+    const char *args = nullptr;
+    auto ret = interface->dump(fd, &args, /*numArgs*/0);
+    if (ret != OK) {
+        return ret;
     }
     return OK;
 }
 
 status_t AidlProviderInfo::AidlDeviceInfo3::isSessionConfigurationSupported(
-        const SessionConfiguration &configuration, bool overrideForPerfClass, bool *status) {
+        const SessionConfiguration &configuration, bool overrideForPerfClass,
+        camera3::metadataGetter getMetadata, bool *status) {
 
     camera::device::StreamConfiguration streamConfiguration;
     bool earlyExit = false;
-    camera3::metadataGetter getMetadata = [this](const String8 &id, bool /*overrideForPerfClass*/) {
-          CameraMetadata physicalChars;
-          getPhysicalCameraCharacteristics(id.c_str(), &physicalChars);
-          return physicalChars;
-    };
     auto bRes = SessionConfigurationUtils::convertToHALStreamCombination(configuration,
             String8(mId.c_str()), mCameraCharacteristics, getMetadata, mPhysicalIds,
             streamConfiguration, overrideForPerfClass, &earlyExit);
