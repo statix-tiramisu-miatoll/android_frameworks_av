@@ -19,6 +19,7 @@
 
 #include <array>
 #include <algorithm>
+#include <map>
 #include <android/binder_auto_utils.h>
 #include <android/binder_manager.h>
 #include <media/PluginMetricsReporting.h>
@@ -52,6 +53,7 @@ using ::aidl::android::hardware::drm::SecureStop;
 using ::aidl::android::hardware::drm::SecureStopId;
 using ::aidl::android::hardware::drm::SecurityLevel;
 using ::aidl::android::hardware::drm::Status;
+using ::aidl::android::hardware::drm::SupportedContentType;
 using ::aidl::android::hardware::drm::Uuid;
 using DrmMetricGroupAidl = ::aidl::android::hardware::drm::DrmMetricGroup;
 using DrmMetricGroupHidl = ::android::hardware::drm::V1_1::DrmMetricGroup;
@@ -420,16 +422,30 @@ status_t DrmHalAidl::isCryptoSchemeSupported(const uint8_t uuid[16], const Strin
             continue;
         }
 
-        if (levelAidl != SecurityLevel::DEFAULT && levelAidl != SecurityLevel::UNKNOWN) {
-            if (levelAidl > schemes.maxLevel || levelAidl < schemes.minLevel) {
-                continue;
-            }
+        ALOGV("supported schemes: %s; query: level %d mime %s",
+              schemes.toString().c_str(), levelAidl, mimeType.c_str());
+        std::map<std::string, SupportedContentType> contentTypes;
+        for (auto ct : schemes.mimeTypes) {
+            contentTypes[ct.mime] = ct;
         }
 
-        if (!mimeTypeStr.empty()) {
-            if (!std::count(schemes.mimeTypes.begin(), schemes.mimeTypes.end(), mimeTypeStr)) {
-                continue;
+        // handle default value cases
+        if (levelAidl == SecurityLevel::DEFAULT || levelAidl == SecurityLevel::UNKNOWN) {
+            if (mimeType == "") {
+                // isCryptoSchemeSupported(uuid)
+                *isSupported = true;
+            } else {
+                // isCryptoSchemeSupported(uuid, mimeType)
+                *isSupported = contentTypes.count(mimeTypeStr);
             }
+            return OK;
+        } else if (mimeType == "") {
+            return BAD_VALUE;
+        }
+
+        auto ct = contentTypes[mimeTypeStr];
+        if (levelAidl > ct.maxLevel || levelAidl < ct.minLevel) {
+              continue;
         }
 
         *isSupported = true;
@@ -1171,6 +1187,25 @@ std::string DrmHalAidl::reportFrameworkMetrics(const std::string& pluginMetrics)
     }
     mediametrics_delete(item);
     return serializedMetrics;
+}
+
+status_t DrmHalAidl::getSupportedSchemes(std::vector<uint8_t> &schemes) const {
+    Mutex::Autolock autoLock(mLock);
+
+    if (mFactories.empty()) return UNKNOWN_ERROR;
+    for (ssize_t i = mFactories.size() - 1; i >= 0; i--) {
+        CryptoSchemes curSchemes{};
+        auto err = mFactories[i]->getSupportedCryptoSchemes(&curSchemes);
+        if (!err.isOk()) {
+            continue;
+        }
+
+        for (auto uuidObj : curSchemes.uuids) {
+            schemes.insert(schemes.end(), uuidObj.uuid.begin(), uuidObj.uuid.end());
+        }
+    }
+
+    return OK;
 }
 
 void DrmHalAidl::cleanup() {
