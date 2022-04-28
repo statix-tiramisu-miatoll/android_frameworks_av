@@ -521,6 +521,14 @@ typedef enum acamera_metadata_tag {
      * region and output only the intersection rectangle as the metering region in the result
      * metadata.  If the region is entirely outside the crop region, it will be ignored and
      * not reported in the result metadata.</p>
+     * <p>When setting the AE metering regions, the application must consider the additional
+     * crop resulted from the aspect ratio differences between the preview stream and
+     * ACAMERA_SCALER_CROP_REGION. For example, if the ACAMERA_SCALER_CROP_REGION is the full
+     * active array size with 4:3 aspect ratio, and the preview stream is 16:9,
+     * the boundary of AE regions will be [0, y_crop] and
+     * [active_width, active_height - 2 * y_crop] rather than [0, 0] and
+     * [active_width, active_height], where y_crop is the additional crop due to aspect ratio
+     * mismatch.</p>
      * <p>Starting from API level 30, the coordinate system of activeArraySize or
      * preCorrectionActiveArraySize is used to represent post-zoomRatio field of view, not
      * pre-zoom field of view. This means that the same aeRegions values at different
@@ -722,6 +730,14 @@ typedef enum acamera_metadata_tag {
      * region and output only the intersection rectangle as the metering region in the result
      * metadata. If the region is entirely outside the crop region, it will be ignored and
      * not reported in the result metadata.</p>
+     * <p>When setting the AF metering regions, the application must consider the additional
+     * crop resulted from the aspect ratio differences between the preview stream and
+     * ACAMERA_SCALER_CROP_REGION. For example, if the ACAMERA_SCALER_CROP_REGION is the full
+     * active array size with 4:3 aspect ratio, and the preview stream is 16:9,
+     * the boundary of AF regions will be [0, y_crop] and
+     * [active_width, active_height - 2 * y_crop] rather than [0, 0] and
+     * [active_width, active_height], where y_crop is the additional crop due to aspect ratio
+     * mismatch.</p>
      * <p>Starting from API level 30, the coordinate system of activeArraySize or
      * preCorrectionActiveArraySize is used to represent post-zoomRatio field of view, not
      * pre-zoom field of view. This means that the same afRegions values at different
@@ -917,6 +933,14 @@ typedef enum acamera_metadata_tag {
      * region and output only the intersection rectangle as the metering region in the result
      * metadata.  If the region is entirely outside the crop region, it will be ignored and
      * not reported in the result metadata.</p>
+     * <p>When setting the AWB metering regions, the application must consider the additional
+     * crop resulted from the aspect ratio differences between the preview stream and
+     * ACAMERA_SCALER_CROP_REGION. For example, if the ACAMERA_SCALER_CROP_REGION is the full
+     * active array size with 4:3 aspect ratio, and the preview stream is 16:9,
+     * the boundary of AWB regions will be [0, y_crop] and
+     * [active_width, active_height - 2 * y_crop] rather than [0, 0] and
+     * [active_width, active_height], where y_crop is the additional crop due to aspect ratio
+     * mismatch.</p>
      * <p>Starting from API level 30, the coordinate system of activeArraySize or
      * preCorrectionActiveArraySize is used to represent post-zoomRatio field of view, not
      * pre-zoom field of view. This means that the same awbRegions values at different
@@ -3474,7 +3498,7 @@ typedef enum acamera_metadata_tag {
      * <p>A map of all available 10-bit dynamic range profiles along with their
      * capture request constraints.</p>
      *
-     * <p>Type: int32[n*2] (acamera_metadata_enum_android_request_available_dynamic_range_profiles_map_t)</p>
+     * <p>Type: int64[n*3] (acamera_metadata_enum_android_request_available_dynamic_range_profiles_map_t)</p>
      *
      * <p>This tag may appear in:
      * <ul>
@@ -3487,7 +3511,7 @@ typedef enum acamera_metadata_tag {
      * support every possible profile combination within a single capture request, then the
      * constraints must be listed here as well.</p>
      */
-    ACAMERA_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP =      // int32[n*2] (acamera_metadata_enum_android_request_available_dynamic_range_profiles_map_t)
+    ACAMERA_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP =      // int64[n*3] (acamera_metadata_enum_android_request_available_dynamic_range_profiles_map_t)
             ACAMERA_REQUEST_START + 19,
     ACAMERA_REQUEST_END,
 
@@ -4216,7 +4240,7 @@ typedef enum acamera_metadata_tag {
     /**
      * <p>The stream use cases supported by this camera device.</p>
      *
-     * <p>Type: int32[n] (acamera_metadata_enum_android_scaler_available_stream_use_cases_t)</p>
+     * <p>Type: int64[n] (acamera_metadata_enum_android_scaler_available_stream_use_cases_t)</p>
      *
      * <p>This tag may appear in:
      * <ul>
@@ -4260,7 +4284,7 @@ typedef enum acamera_metadata_tag {
      * reprocessable session, constrained high speed session, or RAW stream combinations, the
      * application should leave stream use cases within the session as DEFAULT.</p>
      */
-    ACAMERA_SCALER_AVAILABLE_STREAM_USE_CASES =                 // int32[n] (acamera_metadata_enum_android_scaler_available_stream_use_cases_t)
+    ACAMERA_SCALER_AVAILABLE_STREAM_USE_CASES =                 // int64[n] (acamera_metadata_enum_android_scaler_available_stream_use_cases_t)
             ACAMERA_SCALER_START + 25,
     ACAMERA_SCALER_END,
 

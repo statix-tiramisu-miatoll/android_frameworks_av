@@ -78,11 +78,17 @@ class Camera3Device :
             public camera3::RequestBufferInterface,
             public camera3::FlushBufferInterface {
   friend class HidlCamera3Device;
+  friend class AidlCamera3Device;
   public:
 
     explicit Camera3Device(const String8& id, bool overrideForPerfClass, bool legacyClient = false);
 
     virtual ~Camera3Device();
+    // Delete and optionally close native handles and clear the input vector afterward
+    static void cleanupNativeHandles(
+            std::vector<native_handle_t*> *handles, bool closeFd = false);
+
+    IPCTransport getTransportType() { return mInterface->getTransportType(); }
 
     /**
      * CameraDeviceBase interface
@@ -133,9 +139,11 @@ class Camera3Device :
             int streamSetId = camera3::CAMERA3_STREAM_SET_ID_INVALID,
             bool isShared = false, bool isMultiResolution = false,
             uint64_t consumerUsage = 0,
-            int dynamicRangeProfile =
+            int64_t dynamicRangeProfile =
             ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD,
-            int streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT) override;
+            int64_t streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT,
+            int timestampBase = OutputConfiguration::TIMESTAMP_BASE_DEFAULT,
+            int mirrorMode = OutputConfiguration::MIRROR_MODE_AUTO) override;
 
     status_t createStream(const std::vector<sp<Surface>>& consumers,
             bool hasDeferredConsumer, uint32_t width, uint32_t height, int format,
@@ -146,9 +154,11 @@ class Camera3Device :
             int streamSetId = camera3::CAMERA3_STREAM_SET_ID_INVALID,
             bool isShared = false, bool isMultiResolution = false,
             uint64_t consumerUsage = 0,
-            int dynamicRangeProfile =
+            int64_t dynamicRangeProfile =
             ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD,
-            int streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT) override;
+            int64_t streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT,
+            int timestampBase = OutputConfiguration::TIMESTAMP_BASE_DEFAULT,
+            int mirrorMode = OutputConfiguration::MIRROR_MODE_AUTO) override;
 
     status_t createInputStream(
             uint32_t width, uint32_t height, int format, bool isMultiResolution,
@@ -284,13 +294,14 @@ class Camera3Device :
     status_t disconnectImpl();
     static status_t removeFwkOnlyRegionKeys(CameraMetadata *request);
 
+    float getMaxPreviewFps(sp<camera3::Camera3OutputStreamInterface> stream);
+
     static const size_t        kDumpLockAttempts  = 10;
     static const size_t        kDumpSleepDuration = 100000; // 0.10 sec
     static const nsecs_t       kActiveTimeout     = 500000000;  // 500 ms
     static const nsecs_t       kMinWarnInflightDuration = 5000000000; // 5 s
     static const size_t        kInFlightWarnLimit = 30;
     static const size_t        kInFlightWarnLimitHighSpeed = 256; // batch size 32 * pipe depth 8
-    static const nsecs_t       kDefaultExpectedDuration = 100000000; // 100 ms
     static const nsecs_t       kMinInflightDuration = 5000000000; // 5 s
     static const nsecs_t       kBaseGetBufferWait = 3000000000; // 3 sec.
     // SCHED_FIFO priority for request submission thread in HFR mode
@@ -448,10 +459,6 @@ class Camera3Device :
             return OK;
         }
 
-        // Delete and optionally close native handles and clear the input vector afterward
-        static void cleanupNativeHandles(
-                std::vector<native_handle_t*> *handles, bool closeFd = false);
-
         virtual void onBufferFreed(int streamId, const native_handle_t* handle) override;
 
         std::mutex mFreedBuffersLock;
@@ -526,6 +533,7 @@ class Camera3Device :
 
     /**** End scope for mLock ****/
 
+    bool                       mDeviceTimeBaseIsRealtime;
     // The offset converting from clock domain of other subsystem
     // (video/hardware composer) to that of camera. Assumption is that this
     // offset won't change during the life cycle of the camera device. In other
@@ -947,8 +955,9 @@ class Camera3Device :
         // send request in mNextRequests to HAL in a batch. Return true = sucssess
         bool sendRequestsBatch();
 
-        // Calculate the expected maximum duration for a request
-        nsecs_t calculateMaxExpectedDuration(const camera_metadata_t *request);
+        // Calculate the expected (minimum, maximum) duration range for a request
+        std::pair<nsecs_t, nsecs_t> calculateExpectedDurationRange(
+                const camera_metadata_t *request);
 
         // Check and update latest session parameters based on the current request settings.
         bool updateSessionParameters(const CameraMetadata& settings);
@@ -973,6 +982,8 @@ class Camera3Device :
 
         Mutex              mRequestLock;
         Condition          mRequestSignal;
+        bool               mRequestClearing;
+
         Condition          mRequestSubmittedSignal;
         RequestList        mRequestQueue;
         RequestList        mRepeatingRequests;
@@ -1063,7 +1074,7 @@ class Camera3Device :
 
     status_t registerInFlight(uint32_t frameNumber,
             int32_t numBuffers, CaptureResultExtras resultExtras, bool hasInput,
-            bool callback, nsecs_t maxExpectedDuration,
+            bool callback, nsecs_t minExpectedDuration, nsecs_t maxExpectedDuration,
             const std::set<std::set<String8>>& physicalCameraIds,
             bool isStillCapture, bool isZslCapture, bool rotateAndCropAuto,
             const std::set<std::string>& cameraIdsWithZoom, const SurfaceMap& outputSurfaces,
@@ -1313,6 +1324,9 @@ class Camera3Device :
     // Whether the camera framework overrides the device characteristics for
     // performance class.
     bool mOverrideForPerfClass;
+
+    // The current minimum expected frame duration based on AE_TARGET_FPS_RANGE
+    nsecs_t mMinExpectedDuration = 0;
 
     // Injection camera related methods.
     class Camera3DeviceInjectionMethods : public virtual RefBase {

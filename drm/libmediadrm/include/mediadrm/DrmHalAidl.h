@@ -105,6 +105,7 @@ struct DrmHalAidl : public IDrm{
                                            bool* required) const;
     virtual status_t setPlaybackId(Vector<uint8_t> const& sessionId, const char* playbackId);
     virtual status_t getLogMessages(Vector<drm::V1_4::LogMessage>& logs) const;
+    virtual status_t getSupportedSchemes(std::vector<uint8_t> &schemes) const;
 
     ::ndk::ScopedAStatus onEvent(EventTypeAidl in_eventType,
                                  const std::vector<uint8_t>& in_sessionId,
@@ -121,7 +122,6 @@ struct DrmHalAidl : public IDrm{
     std::shared_ptr<DrmHalListener> mListener;
     const std::vector<std::shared_ptr<IDrmFactoryAidl>> mFactories;
     std::shared_ptr<IDrmPluginAidl> mPlugin;
-    std::vector<std::shared_ptr<IDrmFactoryAidl>> makeDrmFactories();
     status_t mInitCheck;
     std::vector<std::shared_ptr<DrmSessionClient>> mOpenSessions;
     void cleanup();

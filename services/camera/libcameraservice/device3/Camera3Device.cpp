@@ -65,8 +65,6 @@
 #include "utils/TraceHFR.h"
 #include "utils/CameraServiceProxyWrapper.h"
 
-#include "../common/hidl/HidlProviderInfo.h"
-
 #include <algorithm>
 #include <tuple>
 
@@ -86,6 +84,7 @@ Camera3Device::Camera3Device(const String8 &id, bool overrideForPerfClass, bool 
         mStatusWaiters(0),
         mUsePartialResult(false),
         mNumPartialResults(1),
+        mDeviceTimeBaseIsRealtime(false),
         mTimestampOffset(0),
         mNextResultFrameNumber(0),
         mNextReprocessResultFrameNumber(0),
@@ -189,11 +188,12 @@ status_t Camera3Device::initializeCommonLocked() {
     mIsInputStreamMultiResolution = false;
 
     // Measure the clock domain offset between camera and video/hw_composer
+    mTimestampOffset = getMonoToBoottimeOffset();
     camera_metadata_entry timestampSource =
             mDeviceInfo.find(ANDROID_SENSOR_INFO_TIMESTAMP_SOURCE);
     if (timestampSource.count > 0 && timestampSource.data.u8[0] ==
             ANDROID_SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME) {
-        mTimestampOffset = getMonoToBoottimeOffset();
+        mDeviceTimeBaseIsRealtime = true;
     }
 
     // Will the HAL be sending in early partial result metadata?
@@ -978,7 +978,8 @@ status_t Camera3Device::createStream(sp<Surface> consumer,
             const String8& physicalCameraId,
             const std::unordered_set<int32_t> &sensorPixelModesUsed,
             std::vector<int> *surfaceIds, int streamSetId, bool isShared, bool isMultiResolution,
-            uint64_t consumerUsage, int dynamicRangeProfile, int streamUseCase) {
+            uint64_t consumerUsage, int64_t dynamicRangeProfile, int64_t streamUseCase,
+            int timestampBase, int mirrorMode) {
     ATRACE_CALL();
 
     if (consumer == nullptr) {
@@ -992,7 +993,7 @@ status_t Camera3Device::createStream(sp<Surface> consumer,
     return createStream(consumers, /*hasDeferredConsumer*/ false, width, height,
             format, dataSpace, rotation, id, physicalCameraId, sensorPixelModesUsed, surfaceIds,
             streamSetId, isShared, isMultiResolution, consumerUsage, dynamicRangeProfile,
-            streamUseCase);
+            streamUseCase, timestampBase, mirrorMode);
 }
 
 static bool isRawFormat(int format) {
@@ -1012,16 +1013,20 @@ status_t Camera3Device::createStream(const std::vector<sp<Surface>>& consumers,
         android_dataspace dataSpace, camera_stream_rotation_t rotation, int *id,
         const String8& physicalCameraId, const std::unordered_set<int32_t> &sensorPixelModesUsed,
         std::vector<int> *surfaceIds, int streamSetId, bool isShared, bool isMultiResolution,
-        uint64_t consumerUsage, int dynamicRangeProfile, int streamUseCase) {
+        uint64_t consumerUsage, int64_t dynamicRangeProfile, int64_t streamUseCase,
+        int timestampBase, int mirrorMode) {
     ATRACE_CALL();
 
     Mutex::Autolock il(mInterfaceLock);
     nsecs_t maxExpectedDuration = getExpectedInFlightDuration();
     Mutex::Autolock l(mLock);
     ALOGV("Camera %s: Creating new stream %d: %d x %d, format %d, dataspace %d rotation %d"
-            " consumer usage %" PRIu64 ", isShared %d, physicalCameraId %s, isMultiResolution %d",
+            " consumer usage %" PRIu64 ", isShared %d, physicalCameraId %s, isMultiResolution %d"
+            " dynamicRangeProfile 0x%" PRIx64 ", streamUseCase %" PRId64 ", timestampBase %d,"
+            " mirrorMode %d",
             mId.string(), mNextStreamId, width, height, format, dataSpace, rotation,
-            consumerUsage, isShared, physicalCameraId.string(), isMultiResolution);
+            consumerUsage, isShared, physicalCameraId.string(), isMultiResolution,
+            dynamicRangeProfile, streamUseCase, timestampBase, mirrorMode);
 
     status_t res;
     bool wasActive = false;
@@ -1090,7 +1095,8 @@ status_t Camera3Device::createStream(const std::vector<sp<Surface>>& consumers,
         newStream = new Camera3OutputStream(mNextStreamId, consumers[0],
                 width, height, blobBufferSize, format, dataSpace, rotation,
                 mTimestampOffset, physicalCameraId, sensorPixelModesUsed, streamSetId,
-                isMultiResolution, dynamicRangeProfile, streamUseCase);
+                isMultiResolution, dynamicRangeProfile, streamUseCase, mDeviceTimeBaseIsRealtime,
+                timestampBase, mirrorMode);
     } else if (format == HAL_PIXEL_FORMAT_RAW_OPAQUE) {
         bool maxResolution =
                 sensorPixelModesUsed.find(ANDROID_SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION) !=
@@ -1104,22 +1110,26 @@ status_t Camera3Device::createStream(const std::vector<sp<Surface>>& consumers,
         newStream = new Camera3OutputStream(mNextStreamId, consumers[0],
                 width, height, rawOpaqueBufferSize, format, dataSpace, rotation,
                 mTimestampOffset, physicalCameraId, sensorPixelModesUsed, streamSetId,
-                isMultiResolution, dynamicRangeProfile, streamUseCase);
+                isMultiResolution, dynamicRangeProfile, streamUseCase, mDeviceTimeBaseIsRealtime,
+                timestampBase, mirrorMode);
     } else if (isShared) {
         newStream = new Camera3SharedOutputStream(mNextStreamId, consumers,
                 width, height, format, consumerUsage, dataSpace, rotation,
                 mTimestampOffset, physicalCameraId, sensorPixelModesUsed, streamSetId,
-                mUseHalBufManager, dynamicRangeProfile, streamUseCase);
+                mUseHalBufManager, dynamicRangeProfile, streamUseCase, mDeviceTimeBaseIsRealtime,
+                timestampBase, mirrorMode);
     } else if (consumers.size() == 0 && hasDeferredConsumer) {
         newStream = new Camera3OutputStream(mNextStreamId,
                 width, height, format, consumerUsage, dataSpace, rotation,
                 mTimestampOffset, physicalCameraId, sensorPixelModesUsed, streamSetId,
-                isMultiResolution, dynamicRangeProfile, streamUseCase);
+                isMultiResolution, dynamicRangeProfile, streamUseCase, mDeviceTimeBaseIsRealtime,
+                timestampBase, mirrorMode);
     } else {
         newStream = new Camera3OutputStream(mNextStreamId, consumers[0],
                 width, height, format, dataSpace, rotation,
                 mTimestampOffset, physicalCameraId, sensorPixelModesUsed, streamSetId,
-                isMultiResolution, dynamicRangeProfile, streamUseCase);
+                isMultiResolution, dynamicRangeProfile, streamUseCase, mDeviceTimeBaseIsRealtime,
+                timestampBase, mirrorMode);
     }
 
     size_t consumerCount = consumers.size();
@@ -1238,7 +1248,7 @@ status_t Camera3Device::setStreamTransform(int id,
         CLOGE("Stream %d does not exist", id);
         return BAD_VALUE;
     }
-    return stream->setTransform(transform);
+    return stream->setTransform(transform, false /*mayChangeMirror*/);
 }
 
 status_t Camera3Device::deleteStream(int id) {
@@ -1778,6 +1788,20 @@ status_t Camera3Device::addBufferListenerForStream(int streamId,
     return OK;
 }
 
+float Camera3Device::getMaxPreviewFps(sp<camera3::Camera3OutputStreamInterface> stream) {
+    camera_metadata_entry minDurations =
+            mDeviceInfo.find(ANDROID_SCALER_AVAILABLE_MIN_FRAME_DURATIONS);
+    for (size_t i = 0; i < minDurations.count; i += 4) {
+        if (minDurations.data.i64[i] == stream->getFormat()
+                && minDurations.data.i64[i+1] == stream->getWidth()
+                && minDurations.data.i64[i+2] == stream->getHeight()) {
+            int64_t minFrameDuration = minDurations.data.i64[i+3];
+            return 1e9f / minFrameDuration;
+        }
+    }
+    return 0.0f;
+}
+
 /**
  * Methods called by subclasses
  */
@@ -1786,6 +1810,7 @@ void Camera3Device::notifyStatus(bool idle) {
     ATRACE_CALL();
     std::vector<int> streamIds;
     std::vector<hardware::CameraStreamStats> streamStats;
+    float sessionMaxPreviewFps = 0.0f;
 
     {
         // Need mLock to safely update state and synchronize to current
@@ -1805,21 +1830,25 @@ void Camera3Device::notifyStatus(bool idle) {
         // state changes
         if (mPauseStateNotify) return;
 
-        // Populate stream statistics in case of Idle
-        if (idle) {
-            for (size_t i = 0; i < mOutputStreams.size(); i++) {
-                auto stream = mOutputStreams[i];
-                if (stream.get() == nullptr) continue;
+        for (size_t i = 0; i < mOutputStreams.size(); i++) {
+            auto stream = mOutputStreams[i];
+            if (stream.get() == nullptr) continue;
+
+            float streamMaxPreviewFps = getMaxPreviewFps(stream);
+            sessionMaxPreviewFps = std::max(sessionMaxPreviewFps, streamMaxPreviewFps);
+
+            // Populate stream statistics in case of Idle
+            if (idle) {
                 streamIds.push_back(stream->getId());
                 Camera3Stream* camera3Stream = Camera3Stream::cast(stream->asHalStream());
                 int64_t usage = 0LL;
-                int streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT;
+                int64_t streamUseCase = ANDROID_SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT;
                 if (camera3Stream != nullptr) {
                     usage = camera3Stream->getUsage();
                     streamUseCase = camera3Stream->getStreamUseCase();
                 }
                 streamStats.emplace_back(stream->getWidth(), stream->getHeight(),
-                    stream->getFormat(), stream->getDataSpace(), usage,
+                    stream->getFormat(), streamMaxPreviewFps, stream->getDataSpace(), usage,
                     stream->getMaxHalBuffers(),
                     stream->getMaxTotalBuffers() - stream->getMaxHalBuffers(),
                     stream->getDynamicRangeProfile(), streamUseCase);
@@ -1860,7 +1889,7 @@ void Camera3Device::notifyStatus(bool idle) {
             }
             listener->notifyIdle(requestCount, resultErrorCount, deviceError, streamStats);
         } else {
-            res = listener->notifyActive();
+            res = listener->notifyActive(sessionMaxPreviewFps);
         }
     }
     if (res != OK) {
@@ -2620,7 +2649,7 @@ void Camera3Device::setErrorStateLockedV(const char *fmt, va_list args) {
 
 status_t Camera3Device::registerInFlight(uint32_t frameNumber,
         int32_t numBuffers, CaptureResultExtras resultExtras, bool hasInput,
-        bool hasAppCallback, nsecs_t maxExpectedDuration,
+        bool hasAppCallback, nsecs_t minExpectedDuration, nsecs_t maxExpectedDuration,
         const std::set<std::set<String8>>& physicalCameraIds,
         bool isStillCapture, bool isZslCapture, bool rotateAndCropAuto,
         const std::set<std::string>& cameraIdsWithZoom,
@@ -2630,8 +2659,9 @@ status_t Camera3Device::registerInFlight(uint32_t frameNumber,
 
     ssize_t res;
     res = mInFlightMap.add(frameNumber, InFlightRequest(numBuffers, resultExtras, hasInput,
-            hasAppCallback, maxExpectedDuration, physicalCameraIds, isStillCapture, isZslCapture,
-            rotateAndCropAuto, cameraIdsWithZoom, requestTimeNs, outputSurfaces));
+            hasAppCallback, minExpectedDuration, maxExpectedDuration, physicalCameraIds,
+            isStillCapture, isZslCapture, rotateAndCropAuto, cameraIdsWithZoom, requestTimeNs,
+            outputSurfaces));
     if (res < 0) return res;
 
     if (mInFlightMap.size() == 1) {
@@ -2728,11 +2758,7 @@ void Camera3Device::monitorMetadata(TagMonitor::eventSource source,
             physicalMetadata, outputBuffers, numOutputBuffers, inputStreamId);
 }
 
-/**
- * HalInterface inner class methods
- */
-
-void Camera3Device::HalInterface::cleanupNativeHandles(
+void Camera3Device::cleanupNativeHandles(
         std::vector<native_handle_t*> *handles, bool closeFd) {
     if (handles == nullptr) {
         return;
@@ -2748,6 +2774,10 @@ void Camera3Device::HalInterface::cleanupNativeHandles(
     handles->clear();
     return;
 }
+
+/**
+ * HalInterface inner class methods
+ */
 
 void Camera3Device::HalInterface::getInflightBufferKeys(
         std::vector<std::pair<int32_t, int32_t>>* out) {
@@ -2827,6 +2857,7 @@ Camera3Device::RequestThread::RequestThread(wp<Camera3Device> parent,
         mInterface(interface),
         mListener(nullptr),
         mId(getId(parent)),
+        mRequestClearing(false),
         mFirstRepeating(false),
         mReconfigured(false),
         mDoPause(false),
@@ -3060,6 +3091,7 @@ status_t Camera3Device::RequestThread::clear(
         *lastFrameNumber = mRepeatingLastFrameNumber;
     }
     mRepeatingLastFrameNumber = hardware::camera2::ICameraDeviceUser::NO_IN_FLIGHT_REPEATING_FRAMES;
+    mRequestClearing = true;
     mRequestSignal.signal();
     return OK;
 }
@@ -3187,13 +3219,16 @@ bool Camera3Device::RequestThread::sendRequestsBatch() {
     return true;
 }
 
-nsecs_t Camera3Device::RequestThread::calculateMaxExpectedDuration(const camera_metadata_t *request) {
-    nsecs_t maxExpectedDuration = kDefaultExpectedDuration;
+std::pair<nsecs_t, nsecs_t> Camera3Device::RequestThread::calculateExpectedDurationRange(
+        const camera_metadata_t *request) {
+    std::pair<nsecs_t, nsecs_t> expectedRange(
+            InFlightRequest::kDefaultMinExpectedDuration,
+            InFlightRequest::kDefaultMaxExpectedDuration);
     camera_metadata_ro_entry_t e = camera_metadata_ro_entry_t();
     find_camera_metadata_ro_entry(request,
             ANDROID_CONTROL_AE_MODE,
             &e);
-    if (e.count == 0) return maxExpectedDuration;
+    if (e.count == 0) return expectedRange;
 
     switch (e.data.u8[0]) {
         case ANDROID_CONTROL_AE_MODE_OFF:
@@ -3201,13 +3236,15 @@ nsecs_t Camera3Device::RequestThread::calculateMaxExpectedDuration(const camera_
                     ANDROID_SENSOR_EXPOSURE_TIME,
                     &e);
             if (e.count > 0) {
-                maxExpectedDuration = e.data.i64[0];
+                expectedRange.first = e.data.i64[0];
+                expectedRange.second = expectedRange.first;
             }
             find_camera_metadata_ro_entry(request,
                     ANDROID_SENSOR_FRAME_DURATION,
                     &e);
             if (e.count > 0) {
-                maxExpectedDuration = std::max(e.data.i64[0], maxExpectedDuration);
+                expectedRange.first = std::max(e.data.i64[0], expectedRange.first);
+                expectedRange.second = expectedRange.first;
             }
             break;
         default:
@@ -3215,12 +3252,13 @@ nsecs_t Camera3Device::RequestThread::calculateMaxExpectedDuration(const camera_
                     ANDROID_CONTROL_AE_TARGET_FPS_RANGE,
                     &e);
             if (e.count > 1) {
-                maxExpectedDuration = 1e9 / e.data.u8[0];
+                expectedRange.first = 1e9 / e.data.i32[1];
+                expectedRange.second = 1e9 / e.data.i32[0];
             }
             break;
     }
 
-    return maxExpectedDuration;
+    return expectedRange;
 }
 
 bool Camera3Device::RequestThread::skipHFRTargetFPSUpdate(int32_t tag,
@@ -3835,11 +3873,13 @@ status_t Camera3Device::RequestThread::prepareHalRequests() {
                 isZslCapture = true;
             }
         }
+        auto expectedDurationRange = calculateExpectedDurationRange(settings);
         res = parent->registerInFlight(halRequest->frame_number,
                 totalNumBuffers, captureRequest->mResultExtras,
                 /*hasInput*/halRequest->input_buffer != NULL,
                 hasCallback,
-                calculateMaxExpectedDuration(settings),
+                /*min*/expectedDurationRange.first,
+                /*max*/expectedDurationRange.second,
                 requestedPhysicalCameras, isStillCapture, isZslCapture,
                 captureRequest->mRotateAndCropAuto, mPrevCameraIdsWithZoom,
                 (mUseHalBufManager) ? uniqueSurfaceIdMap :
@@ -4180,7 +4220,9 @@ sp<Camera3Device::CaptureRequest>
             break;
         }
 
-        res = mRequestSignal.waitRelative(mRequestLock, kRequestTimeout);
+        if (!mRequestClearing) {
+            res = mRequestSignal.waitRelative(mRequestLock, kRequestTimeout);
+        }
 
         if ((mRequestQueue.empty() && mRepeatingRequests.empty()) ||
                 exitPending()) {
@@ -4202,6 +4244,7 @@ sp<Camera3Device::CaptureRequest>
                 if (parent != nullptr) {
                     parent->mRequestBufferSM.onRequestThreadPaused();
                 }
+                mRequestClearing = false;
             }
             // Stop waiting for now and let thread management happen
             return NULL;

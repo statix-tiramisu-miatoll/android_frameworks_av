@@ -186,9 +186,12 @@ static const char *kCodecShapingEnhanced = "android.media.mediacodec.shaped";
 // XXX suppress until we get our representation right
 static bool kEmitHistogram = false;
 
+static int64_t getId(IResourceManagerClient const * client) {
+    return (int64_t) client;
+}
 
 static int64_t getId(const std::shared_ptr<IResourceManagerClient> &client) {
-    return (int64_t) client.get();
+    return getId(client.get());
 }
 
 static bool isResourceError(status_t err) {
@@ -205,12 +208,20 @@ static const C2MemoryUsage kDefaultReadWriteUsage{
 ////////////////////////////////////////////////////////////////////////////////
 
 struct ResourceManagerClient : public BnResourceManagerClient {
-    explicit ResourceManagerClient(MediaCodec* codec) : mMediaCodec(codec) {}
+    explicit ResourceManagerClient(MediaCodec* codec, int32_t pid) :
+            mMediaCodec(codec), mPid(pid) {}
 
     Status reclaimResource(bool* _aidl_return) override {
         sp<MediaCodec> codec = mMediaCodec.promote();
         if (codec == NULL) {
-            // codec is already gone.
+            // Codec is already gone, so remove the resources as well
+            ::ndk::SpAIBinder binder(AServiceManager_getService("media.resource_manager"));
+            std::shared_ptr<IResourceManagerService> service =
+                    IResourceManagerService::fromBinder(binder);
+            if (service == nullptr) {
+                ALOGW("MediaCodec::ResourceManagerClient unable to find ResourceManagerService");
+            }
+            service->removeClient(mPid, getId(this));
             *_aidl_return = true;
             return Status::ok();
         }
@@ -247,6 +258,7 @@ struct ResourceManagerClient : public BnResourceManagerClient {
 
 private:
     wp<MediaCodec> mMediaCodec;
+    int32_t mPid;
 
     DISALLOW_EVIL_CONSTRUCTORS(ResourceManagerClient);
 };
@@ -256,7 +268,7 @@ struct MediaCodec::ResourceManagerServiceProxy : public RefBase {
             const std::shared_ptr<IResourceManagerClient> &client);
     virtual ~ResourceManagerServiceProxy();
 
-    void init();
+    status_t init();
 
     // implements DeathRecipient
     static void BinderDiedCallback(void* cookie);
@@ -285,6 +297,9 @@ MediaCodec::ResourceManagerServiceProxy::ResourceManagerServiceProxy(
         pid_t pid, uid_t uid, const std::shared_ptr<IResourceManagerClient> &client)
         : mPid(pid), mUid(uid), mClient(client),
           mDeathRecipient(AIBinder_DeathRecipient_new(BinderDiedCallback)) {
+    if (mUid == MediaCodec::kNoUid) {
+        mUid = AIBinder_getCallingUid();
+    }
     if (mPid == MediaCodec::kNoPid) {
         mPid = AIBinder_getCallingPid();
     }
@@ -303,12 +318,26 @@ MediaCodec::ResourceManagerServiceProxy::~ResourceManagerServiceProxy() {
     }
 }
 
-void MediaCodec::ResourceManagerServiceProxy::init() {
+status_t MediaCodec::ResourceManagerServiceProxy::init() {
     ::ndk::SpAIBinder binder(AServiceManager_getService("media.resource_manager"));
     mService = IResourceManagerService::fromBinder(binder);
     if (mService == nullptr) {
         ALOGE("Failed to get ResourceManagerService");
-        return;
+        return UNKNOWN_ERROR;
+    }
+
+    int callerPid = AIBinder_getCallingPid();
+    int callerUid = AIBinder_getCallingUid();
+    if (mPid != callerPid || mUid != callerUid) {
+        // Media processes don't need special permissions to act on behalf of other processes.
+        if (callerUid != AID_MEDIA) {
+            char const * permission = "android.permission.MEDIA_RESOURCE_OVERRIDE_PID";
+            if (!checkCallingPermission(String16(permission))) {
+                ALOGW("%s is required to override the caller's PID for media resource management.",
+                        permission);
+                return PERMISSION_DENIED;
+            }
+        }
     }
 
     // Kill clients pending removal.
@@ -319,6 +348,7 @@ void MediaCodec::ResourceManagerServiceProxy::init() {
 
     // after this, require mLock whenever using mService
     AIBinder_linkToDeath(mService->asBinder().get(), mDeathRecipient.get(), this);
+    return OK;
 }
 
 //static
@@ -801,13 +831,8 @@ MediaCodec::MediaCodec(
       mInputBufferCounter(0),
       mGetCodecBase(getCodecBase),
       mGetCodecInfo(getCodecInfo) {
-    if (uid == kNoUid) {
-        mUid = AIBinder_getCallingUid();
-    } else {
-        mUid = uid;
-    }
-    mResourceManagerProxy = new ResourceManagerServiceProxy(pid, mUid,
-            ::ndk::SharedRefBase::make<ResourceManagerClient>(this));
+    mResourceManagerProxy = new ResourceManagerServiceProxy(pid, uid,
+            ::ndk::SharedRefBase::make<ResourceManagerClient>(this, pid));
     if (!mGetCodecBase) {
         mGetCodecBase = [](const AString &name, const char *owner) {
             return GetCodecBase(name, owner);
@@ -835,7 +860,6 @@ MediaCodec::MediaCodec(
             return NAME_NOT_FOUND;
         };
     }
-
     initMediametrics();
 }
 
@@ -1393,7 +1417,11 @@ static const CodecListCache &GetCodecListCache() {
 }
 
 status_t MediaCodec::init(const AString &name) {
-    mResourceManagerProxy->init();
+    status_t err = mResourceManagerProxy->init();
+    if (err != OK) {
+        mCodec = NULL; // remove the codec
+        return err;
+    }
 
     // save init parameters for reset
     mInitName = name;
@@ -1408,7 +1436,7 @@ status_t MediaCodec::init(const AString &name) {
     bool secureCodec = false;
     const char *owner = "";
     if (!name.startsWith("android.filter.")) {
-        status_t err = mGetCodecInfo(name, &mCodecInfo);
+        err = mGetCodecInfo(name, &mCodecInfo);
         if (err != OK) {
             mCodec = NULL;  // remove the codec.
             return err;
@@ -1444,9 +1472,14 @@ status_t MediaCodec::init(const AString &name) {
     if (mDomain == DOMAIN_VIDEO) {
         // video codec needs dedicated looper
         if (mCodecLooper == NULL) {
+            status_t err = OK;
             mCodecLooper = new ALooper;
             mCodecLooper->setName("CodecLooper");
-            mCodecLooper->start(false, false, ANDROID_PRIORITY_AUDIO);
+            err = mCodecLooper->start(false, false, ANDROID_PRIORITY_AUDIO);
+            if (OK != err) {
+                ALOGE("Codec Looper failed to start");
+                return err;
+            }
         }
 
         mCodecLooper->registerHandler(mCodec);
@@ -1481,7 +1514,6 @@ status_t MediaCodec::init(const AString &name) {
         mBatteryChecker = new BatteryChecker(new AMessage(kWhatCheckBatteryStats, this));
     }
 
-    status_t err;
     std::vector<MediaResourceParcel> resources;
     resources.push_back(MediaResource::CodecResource(secureCodec, toMediaResourceSubType(mDomain)));
     for (int i = 0; i <= kMaxRetry; ++i) {
@@ -2136,7 +2168,7 @@ static void mapFormat(AString componentName, const sp<AMessage> &format, const c
                       bool reverse) {
     AString mediaType;
     if (!format->findString("mime", &mediaType)) {
-        ALOGW("mapFormat: no mediaType information");
+        ALOGV("mapFormat: no mediaType information");
         return;
     }
     ALOGV("mapFormat: codec %s mediatype %s kind %s reverse %d", componentName.c_str(),
@@ -3033,8 +3065,9 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
                     CHECK(msg->findInt32("err", &err));
                     CHECK(msg->findInt32("actionCode", &actionCode));
 
-                    ALOGE("Codec reported err %#x, actionCode %d, while in state %d/%s",
-                            err, actionCode, mState, stateString(mState).c_str());
+                    ALOGE("Codec reported err %#x/%s, actionCode %d, while in state %d/%s",
+                                              err, StrMediaError(err).c_str(), actionCode,
+                                              mState, stateString(mState).c_str());
                     if (err == DEAD_OBJECT) {
                         mFlags |= kFlagSawMediaServerDie;
                         mFlags &= ~kFlagIsComponentAllocated;
@@ -3090,10 +3123,8 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
                         case STOPPING:
                         {
                             if (mFlags & kFlagSawMediaServerDie) {
-                                bool postPendingReplies = true;
                                 if (mState == RELEASING && !mReplyID) {
                                     ALOGD("Releasing asynchronously, so nothing to reply here.");
-                                    postPendingReplies = false;
                                 }
                                 // MediaServer died, there definitely won't
                                 // be a shutdown complete notification after
@@ -3106,8 +3137,11 @@ void MediaCodec::onMessageReceived(const sp<AMessage> &msg) {
                                 if (mState == RELEASING) {
                                     mComponentName.clear();
                                 }
-                                if (postPendingReplies) {
+                                if (mReplyID) {
                                     postPendingRepliesAndDeferredMessages(origin + ":dead");
+                                } else {
+                                    ALOGD("no pending replies: %s:dead following %s",
+                                          origin.c_str(), mLastReplyOrigin.c_str());
                                 }
                                 sendErrorResponse = false;
                             } else if (!mReplyID) {
@@ -4674,7 +4708,6 @@ status_t MediaCodec::queueCSDInputBuffer(size_t bufferIndex) {
     mCSD.erase(mCSD.begin());
     std::shared_ptr<C2Buffer> c2Buffer;
     sp<hardware::HidlMemory> memory;
-    size_t offset = 0;
 
     if (mFlags & kFlagUseBlockModel) {
         if (hasCryptoOrDescrambler()) {
@@ -4695,7 +4728,6 @@ status_t MediaCodec::queueCSDInputBuffer(size_t bufferIndex) {
             memcpy(mem->unsecurePointer(), csd->data(), csd->size());
             ssize_t heapOffset;
             memory = hardware::fromHeap(mem->getMemory(&heapOffset, nullptr));
-            offset += heapOffset;
         } else {
             std::shared_ptr<C2LinearBlock> block =
                 FetchLinearBlock(csd->size(), {std::string{mComponentName.c_str()}});

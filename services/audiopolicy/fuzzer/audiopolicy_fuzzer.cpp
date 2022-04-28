@@ -127,13 +127,20 @@ static const std::vector<audio_usage_t> kAudioUsages = [] {
     return result;
 }();
 
+/**
+ * AudioSource - AUDIO_SOURCE_VOICE_COMMUNICATION and AUDIO_SOURCE_HOTWORD
+ * are excluded from kAudioSources[] in order to avoid the abort triggered
+ * for these two types of AudioSource in Engine::getDeviceForInputSource()
+ */
 static const std::vector<audio_source_t> kAudioSources = [] {
     std::vector<audio_source_t> result;
     for (const auto enumVal : xsdc_enum_range<xsd::AudioSource>{}) {
         audio_source_t audioSourceHal;
         std::string audioSource = toString(enumVal);
-        if (audio_source_from_string(audioSource.c_str(), &audioSourceHal)) {
-            result.push_back(audioSourceHal);
+        if (enumVal != xsd::AudioSource::AUDIO_SOURCE_VOICE_COMMUNICATION &&
+            enumVal != xsd::AudioSource::AUDIO_SOURCE_HOTWORD &&
+            audio_source_from_string(audioSource.c_str(), &audioSourceHal)) {
+          result.push_back(audioSourceHal);
         }
     }
     return result;
@@ -251,13 +258,14 @@ bool AudioPolicyManagerFuzzer::getOutputForAttr(
     if (!portId) portId = &localPortId;
     *portId = AUDIO_PORT_HANDLE_NONE;
     AudioPolicyInterface::output_type_t outputType;
+    bool isSpatialized;
 
     // TODO b/182392769: use attribution source util
     AttributionSourceState attributionSource;
     attributionSource.uid = 0;
     attributionSource.token = sp<BBinder>::make();
     if (mManager->getOutputForAttr(&attr, output, AUDIO_SESSION_NONE, &stream, attributionSource,
-            &config, &flags, selectedDeviceId, portId, {}, &outputType) != OK) {
+            &config, &flags, selectedDeviceId, portId, {}, &outputType, &isSpatialized) != OK) {
         return false;
     }
     if (*output == AUDIO_IO_HANDLE_NONE || *portId == AUDIO_PORT_HANDLE_NONE) {

@@ -532,7 +532,7 @@ void processCaptureResult(CaptureOutputStates& states, const camera_capture_resu
                     auto orientation = deviceInfo->second.find(ANDROID_SENSOR_ORIENTATION);
                     if (orientation.count > 0) {
                         ret = CameraUtils::getRotationTransform(deviceInfo->second,
-                                &request.transform);
+                                OutputConfiguration::MIRROR_MODE_AUTO, &request.transform);
                         if (ret != OK) {
                             ALOGE("%s: Failed to calculate current stream transformation: %s (%d)",
                                     __FUNCTION__, strerror(-ret), ret);
@@ -853,6 +853,13 @@ void notifyShutter(CaptureOutputStates& states, const camera_shutter_msg_t &msg)
 
             r.shutterTimestamp = msg.timestamp;
             r.shutterReadoutTimestamp = msg.readout_timestamp;
+            if (r.minExpectedDuration != states.minFrameDuration) {
+                for (size_t i = 0; i < states.outputStreams.size(); i++) {
+                    auto outputStream = states.outputStreams[i];
+                    outputStream->onMinDurationChanged(r.minExpectedDuration);
+                }
+                states.minFrameDuration = r.minExpectedDuration;
+            }
             if (r.hasCallback) {
                 ALOGVV("Camera %s: %s: Shutter fired for frame %d (id %d) at %" PRId64,
                     states.cameraId.string(), __FUNCTION__,
