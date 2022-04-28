@@ -137,6 +137,8 @@ class AudioPolicyManagerTest : public testing::Test {
             audio_port_handle_t *portId = nullptr);
     PatchCountCheck snapshotPatchCount() { return PatchCountCheck(mClient.get()); }
 
+    void getAudioPorts(audio_port_type_t type, audio_port_role_t role,
+            std::vector<audio_port_v7>* ports);
     // Tries to find a device port. If 'foundPort' isn't nullptr,
     // will generate a failure if the port hasn't been found.
     bool findDevicePort(audio_port_role_t role, audio_devices_t deviceType,
@@ -216,13 +218,14 @@ void AudioPolicyManagerTest::getOutputForAttr(
     if (!portId) portId = &localPortId;
     *portId = AUDIO_PORT_HANDLE_NONE;
     AudioPolicyInterface::output_type_t outputType;
+    bool isSpatialized;
     // TODO b/182392769: use attribution source util
     AttributionSourceState attributionSource = AttributionSourceState();
     attributionSource.uid = 0;
     attributionSource.token = sp<BBinder>::make();
     ASSERT_EQ(OK, mManager->getOutputForAttr(
                     &attr, output, AUDIO_SESSION_NONE, &stream, attributionSource, &config, &flags,
-                    selectedDeviceId, portId, {}, &outputType));
+                    selectedDeviceId, portId, {}, &outputType, &isSpatialized));
     ASSERT_NE(AUDIO_PORT_HANDLE_NONE, *portId);
     ASSERT_NE(AUDIO_IO_HANDLE_NONE, *output);
 }
@@ -255,21 +258,26 @@ void AudioPolicyManagerTest::getInputForAttr(
     ASSERT_NE(AUDIO_PORT_HANDLE_NONE, *portId);
 }
 
-bool AudioPolicyManagerTest::findDevicePort(audio_port_role_t role,
-        audio_devices_t deviceType, const std::string &address, audio_port_v7 *foundPort) {
+void AudioPolicyManagerTest::getAudioPorts(audio_port_type_t type, audio_port_role_t role,
+        std::vector<audio_port_v7>* ports) {
     uint32_t numPorts = 0;
     uint32_t generation1;
     status_t ret;
 
-    ret = mManager->listAudioPorts(role, AUDIO_PORT_TYPE_DEVICE, &numPorts, nullptr, &generation1);
-    EXPECT_EQ(NO_ERROR, ret) << "mManager->listAudioPorts returned error";
-    if (HasFailure()) return false;
+    ret = mManager->listAudioPorts(role, type, &numPorts, nullptr, &generation1);
+    ASSERT_EQ(NO_ERROR, ret) << "mManager->listAudioPorts returned error";
 
     uint32_t generation2;
-    struct audio_port_v7 ports[numPorts];
-    ret = mManager->listAudioPorts(role, AUDIO_PORT_TYPE_DEVICE, &numPorts, ports, &generation2);
-    EXPECT_EQ(NO_ERROR, ret) << "mManager->listAudioPorts returned error";
-    EXPECT_EQ(generation1, generation2) << "Generations changed during ports retrieval";
+    ports->resize(numPorts);
+    ret = mManager->listAudioPorts(role, type, &numPorts, ports->data(), &generation2);
+    ASSERT_EQ(NO_ERROR, ret) << "mManager->listAudioPorts returned error";
+    ASSERT_EQ(generation1, generation2) << "Generations changed during ports retrieval";
+}
+
+bool AudioPolicyManagerTest::findDevicePort(audio_port_role_t role,
+        audio_devices_t deviceType, const std::string &address, audio_port_v7 *foundPort) {
+    std::vector<audio_port_v7> ports;
+    getAudioPorts(AUDIO_PORT_TYPE_DEVICE, role, &ports);
     if (HasFailure()) return false;
 
     for (const auto &port : ports) {
@@ -692,6 +700,158 @@ TEST_P(AudioPolicyManagerTestMsd, GetDirectProfilesForAttributesWithMsd) {
     ASSERT_EQ(countDirectProfilesPrimary, getDirectProfilesForAttributes(attr).size());
 }
 
+TEST_P(AudioPolicyManagerTestMsd, IsDirectPlaybackSupportedWithMsd) {
+    const audio_attributes_t attr = {
+        AUDIO_CONTENT_TYPE_UNKNOWN, AUDIO_USAGE_UNKNOWN,
+        AUDIO_SOURCE_DEFAULT, AUDIO_FLAG_NONE, ""};
+
+    audio_config_base_t directConfig = AUDIO_CONFIG_BASE_INITIALIZER;
+    directConfig.format = AUDIO_FORMAT_DTS;
+    directConfig.sample_rate = 48000;
+    directConfig.channel_mask = AUDIO_CHANNEL_OUT_5POINT1;
+
+    audio_config_base_t nonDirectConfig = AUDIO_CONFIG_BASE_INITIALIZER;
+    nonDirectConfig.format = AUDIO_FORMAT_PCM_16_BIT;
+    nonDirectConfig.sample_rate = 48000;
+    nonDirectConfig.channel_mask = AUDIO_CHANNEL_OUT_STEREO;
+
+    audio_config_base_t nonExistentConfig = AUDIO_CONFIG_BASE_INITIALIZER;
+    nonExistentConfig.format = AUDIO_FORMAT_E_AC3;
+    nonExistentConfig.sample_rate = 48000;
+    nonExistentConfig.channel_mask = AUDIO_CHANNEL_OUT_STEREO;
+
+    audio_config_base_t msdDirectConfig1 = AUDIO_CONFIG_BASE_INITIALIZER;
+    msdDirectConfig1.format = AUDIO_FORMAT_AC3;
+    msdDirectConfig1.sample_rate = 48000;
+    msdDirectConfig1.channel_mask = AUDIO_CHANNEL_OUT_5POINT1;
+
+    audio_config_base_t msdDirectConfig2 = AUDIO_CONFIG_BASE_INITIALIZER;
+    msdDirectConfig2.format = AUDIO_FORMAT_IEC60958;
+    msdDirectConfig2.sample_rate = 48000;
+    msdDirectConfig2.channel_mask = AUDIO_CHANNEL_OUT_STEREO;
+
+    audio_config_base_t msdNonDirectConfig = AUDIO_CONFIG_BASE_INITIALIZER;
+    msdNonDirectConfig.format = AUDIO_FORMAT_PCM_16_BIT;
+    msdNonDirectConfig.sample_rate = 96000;
+    msdNonDirectConfig.channel_mask = AUDIO_CHANNEL_OUT_STEREO;
+
+    ASSERT_TRUE(mManager->isDirectOutputSupported(directConfig, attr));
+    ASSERT_FALSE(mManager->isDirectOutputSupported(nonDirectConfig, attr));
+    ASSERT_FALSE(mManager->isDirectOutputSupported(nonExistentConfig, attr));
+    // before setting MSD patches the direct MSD configs return false
+    ASSERT_FALSE(mManager->isDirectOutputSupported(msdDirectConfig1, attr));
+    ASSERT_FALSE(mManager->isDirectOutputSupported(msdDirectConfig2, attr));
+    ASSERT_FALSE(mManager->isDirectOutputSupported(msdNonDirectConfig, attr));
+
+    DeviceVector outputDevices = mManager->getAvailableOutputDevices();
+    // Remove MSD output device to avoid patching to itself
+    outputDevices.remove(mMsdOutputDevice);
+    mManager->setMsdOutputPatches(&outputDevices);
+
+    ASSERT_TRUE(mManager->isDirectOutputSupported(directConfig, attr));
+    ASSERT_FALSE(mManager->isDirectOutputSupported(nonDirectConfig, attr));
+    ASSERT_FALSE(mManager->isDirectOutputSupported(nonExistentConfig, attr));
+    // after setting MSD patches the direct MSD configs return true
+    ASSERT_TRUE(mManager->isDirectOutputSupported(msdDirectConfig1, attr));
+    ASSERT_TRUE(mManager->isDirectOutputSupported(msdDirectConfig2, attr));
+    ASSERT_FALSE(mManager->isDirectOutputSupported(msdNonDirectConfig, attr));
+
+    mManager->releaseMsdOutputPatches(outputDevices);
+
+    ASSERT_TRUE(mManager->isDirectOutputSupported(directConfig, attr));
+    ASSERT_FALSE(mManager->isDirectOutputSupported(nonDirectConfig, attr));
+    ASSERT_FALSE(mManager->isDirectOutputSupported(nonExistentConfig, attr));
+    // AFTER releasing MSD patches the direct MSD configs return false
+    ASSERT_FALSE(mManager->isDirectOutputSupported(msdDirectConfig1, attr));
+    ASSERT_FALSE(mManager->isDirectOutputSupported(msdDirectConfig2, attr));
+    ASSERT_FALSE(mManager->isDirectOutputSupported(msdNonDirectConfig, attr));
+}
+
+TEST_P(AudioPolicyManagerTestMsd, GetDirectPlaybackSupportWithMsd) {
+    const audio_attributes_t attr = {
+        AUDIO_CONTENT_TYPE_UNKNOWN, AUDIO_USAGE_UNKNOWN,
+        AUDIO_SOURCE_DEFAULT, AUDIO_FLAG_NONE, ""};
+
+    audio_config_t directConfig = AUDIO_CONFIG_INITIALIZER;
+    directConfig.format = AUDIO_FORMAT_DTS;
+    directConfig.sample_rate = 48000;
+    directConfig.channel_mask = AUDIO_CHANNEL_OUT_5POINT1;
+
+    audio_config_t nonDirectConfig = AUDIO_CONFIG_INITIALIZER;
+    nonDirectConfig.format = AUDIO_FORMAT_PCM_16_BIT;
+    nonDirectConfig.sample_rate = 48000;
+    nonDirectConfig.channel_mask = AUDIO_CHANNEL_OUT_STEREO;
+
+    audio_config_t nonExistentConfig = AUDIO_CONFIG_INITIALIZER;
+    nonExistentConfig.format = AUDIO_FORMAT_E_AC3;
+    nonExistentConfig.sample_rate = 48000;
+    nonExistentConfig.channel_mask = AUDIO_CHANNEL_OUT_STEREO;
+
+    audio_config_t msdDirectConfig1 = AUDIO_CONFIG_INITIALIZER;
+    msdDirectConfig1.format = AUDIO_FORMAT_AC3;
+    msdDirectConfig1.sample_rate = 48000;
+    msdDirectConfig1.channel_mask = AUDIO_CHANNEL_OUT_5POINT1;
+
+    audio_config_t msdDirectConfig2 = AUDIO_CONFIG_INITIALIZER;
+    msdDirectConfig2.format = AUDIO_FORMAT_IEC60958;
+    msdDirectConfig2.sample_rate = 48000;
+    msdDirectConfig2.channel_mask = AUDIO_CHANNEL_OUT_STEREO;
+
+    audio_config_t msdNonDirectConfig = AUDIO_CONFIG_INITIALIZER;
+    msdNonDirectConfig.format = AUDIO_FORMAT_PCM_16_BIT;
+    msdNonDirectConfig.sample_rate = 96000;
+    msdNonDirectConfig.channel_mask = AUDIO_CHANNEL_OUT_STEREO;
+
+    ASSERT_EQ(AUDIO_DIRECT_BITSTREAM_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &directConfig));
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &nonDirectConfig));
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &nonExistentConfig));
+    // before setting MSD patches the direct MSD configs return AUDIO_DIRECT_NOT_SUPPORTED
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &msdDirectConfig1));
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &msdDirectConfig2));
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &msdNonDirectConfig));
+
+    DeviceVector outputDevices = mManager->getAvailableOutputDevices();
+    // Remove MSD output device to avoid patching to itself
+    outputDevices.remove(mMsdOutputDevice);
+    mManager->setMsdOutputPatches(&outputDevices);
+
+    ASSERT_EQ(AUDIO_DIRECT_BITSTREAM_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &directConfig));
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &nonDirectConfig));
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &nonExistentConfig));
+    // after setting MSD patches the direct MSD configs return values according to their flags
+    ASSERT_EQ(AUDIO_DIRECT_OFFLOAD_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &msdDirectConfig1));
+    ASSERT_EQ(AUDIO_DIRECT_BITSTREAM_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &msdDirectConfig2));
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &msdNonDirectConfig));
+
+    mManager->releaseMsdOutputPatches(outputDevices);
+
+    ASSERT_EQ(AUDIO_DIRECT_BITSTREAM_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &directConfig));
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &nonDirectConfig));
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &nonExistentConfig));
+    // after releasing MSD patches the direct MSD configs return AUDIO_DIRECT_NOT_SUPPORTED
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &msdDirectConfig1));
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &msdDirectConfig2));
+    ASSERT_EQ(AUDIO_DIRECT_NOT_SUPPORTED,
+                mManager->getDirectPlaybackSupport(&attr, &msdNonDirectConfig));
+}
+
 class AudioPolicyManagerTestWithConfigurationFile : public AudioPolicyManagerTest {
 protected:
     void SetUpManagerConfig() override;
@@ -719,6 +879,44 @@ TEST_F(AudioPolicyManagerTestWithConfigurationFile, InitSuccess) {
 
 TEST_F(AudioPolicyManagerTestWithConfigurationFile, Dump) {
     dumpToLog();
+}
+
+TEST_F(AudioPolicyManagerTestWithConfigurationFile, ListAudioPortsHasFlags) {
+    // Create an input for VOIP TX because it's not opened automatically like outputs are.
+    audio_port_handle_t selectedDeviceId = AUDIO_PORT_HANDLE_NONE;
+    audio_port_handle_t mixPortId = AUDIO_PORT_HANDLE_NONE;
+    audio_source_t source = AUDIO_SOURCE_VOICE_COMMUNICATION;
+    audio_attributes_t attr = {
+        AUDIO_CONTENT_TYPE_UNKNOWN, AUDIO_USAGE_UNKNOWN, source, AUDIO_FLAG_NONE, ""};
+    ASSERT_NO_FATAL_FAILURE(getInputForAttr(attr, 1, &selectedDeviceId, AUDIO_FORMAT_PCM_16_BIT,
+                    AUDIO_CHANNEL_IN_MONO, 8000, AUDIO_INPUT_FLAG_VOIP_TX, &mixPortId));
+
+    std::vector<audio_port_v7> ports;
+    ASSERT_NO_FATAL_FAILURE(
+            getAudioPorts(AUDIO_PORT_TYPE_MIX, AUDIO_PORT_ROLE_NONE, &ports));
+    EXPECT_NE(0, ports.size());
+    bool hasFlags = false, foundPrimary = false, foundVoipRx = false, foundVoipTx = false;
+    for (const auto& port : ports) {
+        if ((port.active_config.config_mask & AUDIO_PORT_CONFIG_FLAGS) != 0) {
+            hasFlags = true;
+            if (port.role == AUDIO_PORT_ROLE_SOURCE) {
+                if ((port.active_config.flags.output & AUDIO_OUTPUT_FLAG_PRIMARY) != 0) {
+                    foundPrimary = true;
+                }
+                if ((port.active_config.flags.output & AUDIO_OUTPUT_FLAG_VOIP_RX) != 0) {
+                    foundVoipRx = true;
+                }
+            } else if (port.role == AUDIO_PORT_ROLE_SINK) {
+                if ((port.active_config.flags.input & AUDIO_INPUT_FLAG_VOIP_TX) != 0) {
+                    foundVoipTx = true;
+                }
+            }
+        }
+    }
+    EXPECT_TRUE(hasFlags);
+    EXPECT_TRUE(foundPrimary);
+    EXPECT_TRUE(foundVoipRx);
+    EXPECT_TRUE(foundVoipTx);
 }
 
 using PolicyMixTuple = std::tuple<audio_usage_t, audio_source_t, uint32_t>;
