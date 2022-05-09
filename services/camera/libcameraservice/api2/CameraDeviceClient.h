@@ -308,7 +308,7 @@ private:
 
     // Dynamic range profile id -> Supported dynamic profiles bitmap within an single capture
     // request
-    std::unordered_map<int, int> mDynamicProfileMap;
+    std::unordered_map<int64_t, int64_t> mDynamicProfileMap;
 
     struct InputStreamConfiguration {
         bool configured;
@@ -349,6 +349,9 @@ private:
 
     // Override the camera characteristics for performance class primary cameras.
     bool mOverrideForPerfClass;
+
+    // The string representation of object passed into CaptureRequest.setTag.
+    std::string mUserTag;
 };
 
 }; // namespace android

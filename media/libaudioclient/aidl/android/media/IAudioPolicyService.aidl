@@ -137,9 +137,7 @@ interface IAudioPolicyService {
 
     int /* product_strategy_t */ getStrategyForStream(AudioStreamType stream);
 
-    AudioDeviceDescription[] getDevicesForStream(AudioStreamType stream);
-
-    AudioDevice[] getDevicesForAttributes(in AudioAttributesEx attr);
+    AudioDevice[] getDevicesForAttributes(in AudioAttributesEx attr, boolean forVolume);
 
     int /* audio_io_handle_t */ getOutputForEffect(in EffectDescriptor desc);
 
@@ -216,8 +214,8 @@ interface IAudioPolicyService {
                        inout Int count,
                        out AudioPort[] ports);
 
-    /** Get attributes for a given audio port. */
-    AudioPort getAudioPort(in AudioPort port);
+    /** Get attributes for the audio port with the given id (AudioPort.hal.id field). */
+    AudioPort getAudioPort(int /* audio_port_handle_t */ portId);
 
     /**
      * Create an audio patch between several source and sink ports.
@@ -392,4 +390,8 @@ interface IAudioPolicyService {
      * for the specified audio attributes.
      */
     AudioProfile[] getDirectProfilesForAttributes(in AudioAttributesInternal attr);
+
+    // When adding a new method, please review and update
+    // AudioPolicyService.cpp AudioPolicyService::onTransact()
+    // AudioPolicyService.cpp IAUDIOPOLICYSERVICE_BINDER_METHOD_MACRO_LIST
 }
