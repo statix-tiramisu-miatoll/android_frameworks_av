@@ -30,6 +30,7 @@
 #include <android/hardware/media/c2/1.0/IInputSurface.h>
 #include <android/hardware/media/omx/1.0/IGraphicBufferSource.h>
 #include <android/hardware/media/omx/1.0/IOmx.h>
+#include <android-base/properties.h>
 #include <android-base/stringprintf.h>
 #include <cutils/properties.h>
 #include <gui/IGraphicBufferProducer.h>
@@ -212,9 +213,8 @@ public:
                 (OMX_INDEXTYPE)OMX_IndexParamConsumerUsageBits,
                 &usage, sizeof(usage));
 
-        mSource->configure(
-                mOmxNode, static_cast<hardware::graphics::common::V1_0::Dataspace>(mDataSpace));
-        return OK;
+        return GetStatus(mSource->configure(
+                mOmxNode, static_cast<hardware::graphics::common::V1_0::Dataspace>(mDataSpace)));
     }
 
     void disconnect() override {
@@ -872,6 +872,11 @@ void CCodec::configure(const sp<AMessage> &msg) {
                         }
                         config->mTunneled = true;
                     }
+
+                    int32_t pushBlankBuffersOnStop = 0;
+                    if (msg->findInt32(KEY_PUSH_BLANK_BUFFERS_ON_STOP, &pushBlankBuffersOnStop)) {
+                        config->mPushBlankBuffersOnStop = pushBlankBuffersOnStop == 1;
+                    }
                 }
             }
             setSurface(surface);
@@ -1007,7 +1012,9 @@ void CCodec::configure(const sp<AMessage> &msg) {
             // Query vendor format for Flexible YUV
             std::vector<std::unique_ptr<C2Param>> heapParams;
             C2StoreFlexiblePixelFormatDescriptorsInfo *pixelFormatInfo = nullptr;
-            if (mClient->query(
+            int vendorSdkVersion = base::GetIntProperty(
+                    "ro.vendor.build.version.sdk", android_get_device_api_level());
+            if (vendorSdkVersion >= __ANDROID_API_S__ && mClient->query(
                         {},
                         {C2StoreFlexiblePixelFormatDescriptorsInfo::PARAM_TYPE},
                         C2_MAY_BLOCK,
@@ -1527,6 +1534,9 @@ sp<PersistentSurface> CCodec::CreateOmxInputSurface() {
     using namespace android::hardware::graphics::bufferqueue::V1_0::utils;
     typedef android::hardware::media::omx::V1_0::Status OmxStatus;
     android::sp<IOmx> omx = IOmx::getService();
+    if (omx == nullptr) {
+        return nullptr;
+    }
     typedef android::hardware::graphics::bufferqueue::V1_0::
             IGraphicBufferProducer HGraphicBufferProducer;
     typedef android::hardware::media::omx::V1_0::
@@ -1804,9 +1814,16 @@ void CCodec::start() {
     if (tryAndReportOnError(setRunning) != OK) {
         return;
     }
+
+    err2 = mChannel->requestInitialInputBuffers();
+
+    if (err2 != OK) {
+        ALOGE("Initial request for Input Buffers failed");
+        mCallback->onError(err2,ACTION_CODE_FATAL);
+        return;
+    }
     mCallback->onStartCompleted();
 
-    (void)mChannel->requestInitialInputBuffers();
 }
 
 void CCodec::initiateShutdown(bool keepComponentAllocated) {
@@ -1832,7 +1849,13 @@ void CCodec::initiateStop() {
         }
         state->set(STOPPING);
     }
-
+    {
+        Mutexed<std::unique_ptr<Config>>::Locked configLocked(mConfig);
+        const std::unique_ptr<Config> &config = *configLocked;
+        if (config->mPushBlankBuffersOnStop) {
+            mChannel->pushBlankBufferToOutputSurface();
+        }
+    }
     mChannel->reset();
     (new AMessage(kWhatStop, this))->post();
 }
@@ -1918,6 +1941,13 @@ void CCodec::initiateRelease(bool sendCallback /* = true */) {
             config->mInputSurface->disconnect();
             config->mInputSurface = nullptr;
             config->mInputSurfaceDataspace = HAL_DATASPACE_UNKNOWN;
+        }
+    }
+    {
+        Mutexed<std::unique_ptr<Config>>::Locked configLocked(mConfig);
+        const std::unique_ptr<Config> &config = *configLocked;
+        if (config->mPushBlankBuffersOnStop) {
+            mChannel->pushBlankBufferToOutputSurface();
         }
     }
 
@@ -2619,7 +2649,10 @@ public:
         std::vector<std::unique_ptr<C2Param>> params;
         err = intf->query(
                 {&mApiFeatures},
-                {C2PortAllocatorsTuning::input::PARAM_TYPE},
+                {
+                    C2StreamBufferTypeSetting::input::PARAM_TYPE,
+                    C2PortAllocatorsTuning::input::PARAM_TYPE
+                },
                 C2_MAY_BLOCK,
                 &params);
         if (err != C2_OK && err != C2_BAD_INDEX) {
@@ -2632,7 +2665,10 @@ public:
             if (!param) {
                 continue;
             }
-            if (param->type() == C2PortAllocatorsTuning::input::PARAM_TYPE) {
+            if (param->type() == C2StreamBufferTypeSetting::input::PARAM_TYPE) {
+                mInputStreamFormat.reset(
+                        C2StreamBufferTypeSetting::input::From(param));
+            } else if (param->type() == C2PortAllocatorsTuning::input::PARAM_TYPE) {
                 mInputAllocators.reset(
                         C2PortAllocatorsTuning::input::From(param));
             }
@@ -2652,6 +2688,16 @@ public:
         return mApiFeatures;
     }
 
+    const C2StreamBufferTypeSetting::input &getInputStreamFormat() const {
+        static std::unique_ptr<C2StreamBufferTypeSetting::input> sInvalidated = []{
+            std::unique_ptr<C2StreamBufferTypeSetting::input> param;
+            param.reset(new C2StreamBufferTypeSetting::input(0u, C2BufferData::INVALID));
+            param->invalidate();
+            return param;
+        }();
+        return mInputStreamFormat ? *mInputStreamFormat : *sInvalidated;
+    }
+
     const C2PortAllocatorsTuning::input &getInputAllocators() const {
         static std::unique_ptr<C2PortAllocatorsTuning::input> sInvalidated = []{
             std::unique_ptr<C2PortAllocatorsTuning::input> param =
@@ -2667,6 +2713,7 @@ private:
 
     std::vector<C2FieldSupportedValuesQuery> mFields;
     C2ApiFeaturesSetting mApiFeatures;
+    std::unique_ptr<C2StreamBufferTypeSetting::input> mInputStreamFormat;
     std::unique_ptr<C2PortAllocatorsTuning::input> mInputAllocators;
 };
 
@@ -2708,6 +2755,24 @@ static status_t GetCommonAllocatorIds(
         if (intfCache.initCheck() != OK) {
             continue;
         }
+        const C2StreamBufferTypeSetting::input &streamFormat = intfCache.getInputStreamFormat();
+        if (streamFormat) {
+            C2Allocator::type_t allocatorType = C2Allocator::LINEAR;
+            if (streamFormat.value == C2BufferData::GRAPHIC
+                    || streamFormat.value == C2BufferData::GRAPHIC_CHUNKS) {
+                allocatorType = C2Allocator::GRAPHIC;
+            }
+
+            if (type != allocatorType) {
+                // requested type is not supported at input allocators
+                ids->clear();
+                ids->insert(defaultAllocatorId);
+                ALOGV("name(%s) does not support a type(0x%x) as input allocator."
+                        " uses default allocator id(%d)", name.c_str(), type, defaultAllocatorId);
+                break;
+            }
+        }
+
         const C2PortAllocatorsTuning::input &allocators = intfCache.getInputAllocators();
         if (firstIteration) {
             firstIteration = false;

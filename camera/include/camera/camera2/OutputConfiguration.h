@@ -58,12 +58,12 @@ public:
     int                        getSurfaceType() const;
     int                        getWidth() const;
     int                        getHeight() const;
-    int                        getDynamicRangeProfile() const;
+    int64_t                    getDynamicRangeProfile() const;
     bool                       isDeferred() const;
     bool                       isShared() const;
     String16                   getPhysicalCameraId() const;
     bool                       isMultiResolution() const;
-    int                        getStreamUseCase() const;
+    int64_t                    getStreamUseCase() const;
     int                        getTimestampBase() const;
     int                        getMirrorMode() const;
 
@@ -184,8 +184,8 @@ private:
     String16                   mPhysicalCameraId;
     bool                       mIsMultiResolution;
     std::vector<int32_t>       mSensorPixelModesUsed;
-    int                        mDynamicRangeProfile;
-    int                        mStreamUseCase;
+    int64_t                    mDynamicRangeProfile;
+    int64_t                    mStreamUseCase;
     int                        mTimestampBase;
     int                        mMirrorMode;
 };

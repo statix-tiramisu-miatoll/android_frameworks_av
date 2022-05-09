@@ -46,9 +46,8 @@ constexpr float kMaxRotationalVelocity = 8;
 // high will result in high prediction errors whenever the head accelerates (changes velocity).
 constexpr auto kPredictionDuration = 50ms;
 
-// After losing this many consecutive samples from either sensor, we would treat the measurement as
-// stale;
-constexpr auto kMaxLostSamples = 4;
+// After not getting a pose sample for this long, we would treat the measurement as stale.
+constexpr auto kFreshnessTimeout = 50ms;
 
 // Auto-recenter kicks in after the head has been still for this long.
 constexpr auto kAutoRecenterWindowDuration = 6s;
@@ -57,7 +56,7 @@ constexpr auto kAutoRecenterWindowDuration = 6s;
 constexpr float kAutoRecenterTranslationThreshold = 0.1f;
 
 // Auto-recenter considers head not still if rotated by this much (in radians, approx).
-constexpr float kAutoRecenterRotationThreshold = 7.0f / 180 * M_PI;
+constexpr float kAutoRecenterRotationThreshold = 10.5f / 180 * M_PI;
 
 // Screen is considered to be unstable (not still) if it has moved significantly within the last
 // time window of this duration.
@@ -79,14 +78,14 @@ constexpr auto kTicksPerSecond = Ticks::period::den;
 }  // namespace
 
 SpatializerPoseController::SpatializerPoseController(Listener* listener,
-                                                     std::chrono::microseconds sensorPeriod,
-                                                     std::chrono::microseconds maxUpdatePeriod)
+                                        std::chrono::microseconds sensorPeriod,
+                                        std::optional<std::chrono::microseconds> maxUpdatePeriod)
     : mListener(listener),
       mSensorPeriod(sensorPeriod),
       mProcessor(createHeadTrackingProcessor(HeadTrackingProcessor::Options{
               .maxTranslationalVelocity = kMaxTranslationalVelocity / kTicksPerSecond,
               .maxRotationalVelocity = kMaxRotationalVelocity / kTicksPerSecond,
-              .freshnessTimeout = Ticks(sensorPeriod * kMaxLostSamples).count(),
+              .freshnessTimeout = Ticks(kFreshnessTimeout).count(),
               .predictionDuration = Ticks(kPredictionDuration).count(),
               .autoRecenterWindowDuration = Ticks(kAutoRecenterWindowDuration).count(),
               .autoRecenterTranslationalThreshold = kAutoRecenterTranslationThreshold,
@@ -102,8 +101,12 @@ SpatializerPoseController::SpatializerPoseController(Listener* listener,
               std::optional<HeadTrackingMode> modeIfChanged;
               {
                   std::unique_lock lock(mMutex);
-                  mCondVar.wait_for(lock, maxUpdatePeriod,
-                                    [this] { return mShouldExit || mShouldCalculate; });
+                  if (maxUpdatePeriod.has_value()) {
+                      mCondVar.wait_for(lock, maxUpdatePeriod.value(),
+                                        [this] { return mShouldExit || mShouldCalculate; });
+                  } else {
+                      mCondVar.wait(lock, [this] { return mShouldExit || mShouldCalculate; });
+                  }
                   if (mShouldExit) {
                       ALOGV("Exiting thread");
                       return;
