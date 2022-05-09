@@ -1688,6 +1688,13 @@ Status CameraService::connectDevice(
         return STATUS_ERROR(ERROR_ILLEGAL_ARGUMENT, msg.string());
     }
 
+    if (CameraServiceProxyWrapper::isCameraDisabled()) {
+        String8 msg =
+                String8::format("Camera disabled by device policy");
+        ALOGE("%s: %s", __FUNCTION__, msg.string());
+        return STATUS_ERROR(ERROR_DISABLED, msg.string());
+    }
+
     // enforce system camera permissions
     if (oomScoreOffset > 0 &&
             !hasPermissionsForSystemCamera(callingPid, CameraThreadState::getCallingUid())) {
@@ -2139,10 +2146,14 @@ Status CameraService::turnOnTorchWithStrengthLevel(const String16& cameraId, int
                     id.string());
                 errorCode = ERROR_CAMERA_IN_USE;
                 break;
+            case -EINVAL:
+                msg = String8::format("Torch strength level %d is not within the "
+                        "valid range.", torchStrength);
+                errorCode = ERROR_ILLEGAL_ARGUMENT;
+                break;
             default:
                 msg = String8::format("Changing torch strength level failed.");
                 errorCode = ERROR_INVALID_OPERATION;
-
         }
         ALOGE("%s: %s", __FUNCTION__, msg.string());
         return STATUS_ERROR(errorCode, msg.string());
@@ -3666,7 +3677,8 @@ void CameraService::UidPolicy::registerSelf() {
     status_t res = mAm.linkToDeath(this);
     mAm.registerUidObserver(this, ActivityManager::UID_OBSERVER_GONE
             | ActivityManager::UID_OBSERVER_IDLE
-            | ActivityManager::UID_OBSERVER_ACTIVE | ActivityManager::UID_OBSERVER_PROCSTATE,
+            | ActivityManager::UID_OBSERVER_ACTIVE | ActivityManager::UID_OBSERVER_PROCSTATE
+            | ActivityManager::UID_OBSERVER_PROC_OOM_ADJ,
             ActivityManager::PROCESS_STATE_UNKNOWN,
             String16("cameraserver"));
     if (res == OK) {
@@ -3712,17 +3724,23 @@ void CameraService::UidPolicy::onUidIdle(uid_t uid, bool /* disabled */) {
 
 void CameraService::UidPolicy::onUidStateChanged(uid_t uid, int32_t procState,
         int64_t procStateSeq __unused, int32_t capability __unused) {
-    bool procStateChange = false;
+    Mutex::Autolock _l(mUidLock);
+    if (mMonitoredUids.find(uid) != mMonitoredUids.end() &&
+            mMonitoredUids[uid].procState != procState) {
+        mMonitoredUids[uid].procState = procState;
+    }
+}
+
+void CameraService::UidPolicy::onUidProcAdjChanged(uid_t uid) {
+    bool procAdjChange = false;
     {
         Mutex::Autolock _l(mUidLock);
-        if ((mMonitoredUids.find(uid) != mMonitoredUids.end()) &&
-                (mMonitoredUids[uid].first != procState)) {
-            mMonitoredUids[uid].first = procState;
-            procStateChange = true;
+        if (mMonitoredUids.find(uid) != mMonitoredUids.end()) {
+            procAdjChange = true;
         }
     }
 
-    if (procStateChange) {
+    if (procAdjChange) {
         sp<CameraService> service = mService.promote();
         if (service != nullptr) {
             service->notifyMonitoredUids();
@@ -3734,11 +3752,12 @@ void CameraService::UidPolicy::registerMonitorUid(uid_t uid) {
     Mutex::Autolock _l(mUidLock);
     auto it = mMonitoredUids.find(uid);
     if (it != mMonitoredUids.end()) {
-        it->second.second++;
+        it->second.refCount++;
     } else {
-        mMonitoredUids.emplace(
-                std::pair<uid_t, std::pair<int32_t, size_t>> (uid,
-                    std::pair<int32_t, size_t> (ActivityManager::PROCESS_STATE_NONEXISTENT, 1)));
+        MonitoredUid monitoredUid;
+        monitoredUid.procState = ActivityManager::PROCESS_STATE_NONEXISTENT;
+        monitoredUid.refCount = 1;
+        mMonitoredUids.emplace(std::pair<uid_t, MonitoredUid>(uid, monitoredUid));
     }
 }
 
@@ -3746,8 +3765,8 @@ void CameraService::UidPolicy::unregisterMonitorUid(uid_t uid) {
     Mutex::Autolock _l(mUidLock);
     auto it = mMonitoredUids.find(uid);
     if (it != mMonitoredUids.end()) {
-        it->second.second--;
-        if (it->second.second == 0) {
+        it->second.refCount--;
+        if (it->second.refCount == 0) {
             mMonitoredUids.erase(it);
         }
     } else {
@@ -3825,7 +3844,7 @@ int32_t CameraService::UidPolicy::getProcState(uid_t uid) {
 int32_t CameraService::UidPolicy::getProcStateLocked(uid_t uid) {
     int32_t procState = ActivityManager::PROCESS_STATE_UNKNOWN;
     if (mMonitoredUids.find(uid) != mMonitoredUids.end()) {
-        procState = mMonitoredUids[uid].first;
+        procState = mMonitoredUids[uid].procState;
     }
     return procState;
 }
@@ -4427,8 +4446,9 @@ status_t CameraService::dump(int fd, const Vector<String16>& args) {
 void CameraService::dumpOpenSessionClientLogs(int fd,
         const Vector<String16>& args, const String8& cameraId) {
     auto clientDescriptor = mActiveClientManager.get(cameraId);
-    dprintf(fd, "  Device %s is open. Client instance dump:\n",
-        cameraId.string());
+    dprintf(fd, "  %s : Device %s is open. Client instance dump:\n",
+            getFormattedCurrentTime().string(),
+            cameraId.string());
     dprintf(fd, "    Client priority score: %d state: %d\n",
         clientDescriptor->getPriority().getScore(),
         clientDescriptor->getPriority().getState());
