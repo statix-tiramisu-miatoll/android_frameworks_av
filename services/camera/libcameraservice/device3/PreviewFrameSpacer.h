@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,14 @@
  * limitations under the License.
  */
 
-#ifndef ANDROID_SERVERS_CAMERA_CAMERA3_PREVIEWFRAMESCHEDULER_H
-#define ANDROID_SERVERS_CAMERA_CAMERA3_PREVIEWFRAMESCHEDULER_H
+#ifndef ANDROID_SERVERS_CAMERA_CAMERA3_PREVIEWFRAMESPACER_H
+#define ANDROID_SERVERS_CAMERA_CAMERA3_PREVIEWFRAMESPACER_H
 
 #include <queue>
 
-#include <android/choreographer.h>
 #include <gui/Surface.h>
-#include <gui/ISurfaceComposer.h>
 #include <utils/Condition.h>
 #include <utils/Mutex.h>
-#include <utils/Looper.h>
 #include <utils/Thread.h>
 #include <utils/Timers.h>
 
@@ -33,10 +30,9 @@ namespace android {
 namespace camera3 {
 
 class Camera3OutputStream;
-struct ChoreographerThread;
 
 /***
- * Preview stream scheduler for better preview display synchronization
+ * Preview stream spacer for better frame spacing
  *
  * The ideal viewfinder user experience is that frames are presented to the
  * user in the same cadence as outputed by the camera sensor. However, the
@@ -44,30 +40,24 @@ struct ChoreographerThread;
  * as CPU load, differences in request settings, etc. This frame processing
  * latency results in variation in presentation of frames to the user.
  *
- * The PreviewFrameScheduler improves the viewfinder user experience by:
- * 1. Cache preview buffers in the scheduler
- * 2. For each choreographer callback, queue the oldest cached buffer with
- *    the best matching presentation timestamp. Frame N's presentation timestamp
- *    is the choreographer timeline timestamp closest to (Frame N-1's
- *    presentation time + camera capture interval between frame N-1 and frame N).
- * 3. Maintain at most 2 queue-able buffers. If the 3rd preview buffer becomes
- *    available, queue the oldest cached buffer to the buffer queue.
+ * The PreviewFrameSpacer improves the viewfinder user experience by:
+ * - Cache the frame buffers if the intervals between queueBuffer is shorter
+ *   than the camera capture intervals.
+ * - Queue frame buffers in the same cadence as the camera capture time.
+ * - Maintain at most 1 queue-able buffer. If the 2nd preview buffer becomes
+ *   available, queue the oldest cached buffer to the buffer queue.
  */
-class PreviewFrameScheduler {
+class PreviewFrameSpacer : public Thread {
   public:
-    explicit PreviewFrameScheduler(Camera3OutputStream& parent, sp<Surface> consumer);
-    virtual ~PreviewFrameScheduler();
+    explicit PreviewFrameSpacer(Camera3OutputStream& parent, sp<Surface> consumer);
+    virtual ~PreviewFrameSpacer();
 
     // Queue preview buffer locally
     status_t queuePreviewBuffer(nsecs_t timestamp, int32_t transform,
             ANativeWindowBuffer* anwBuffer, int releaseFence);
 
-    // Callback function with a new presentation timeline from choreographer. This
-    // will trigger a locally queued buffer be sent to the buffer queue.
-    void onNewPresentationTime(const std::vector<nsecs_t>& presentationTimeline);
-
-    // Maintain at most 2 queue-able buffers
-    static constexpr int32_t kQueueDepthWatermark = 2;
+    bool threadLoop() override;
+    void requestExit() override;
 
   private:
     // structure holding cached preview buffer info
@@ -81,25 +71,20 @@ class PreviewFrameScheduler {
                 timestamp(t), transform(tr), anwBuffer(anwb), releaseFence(rf) {}
     };
 
-    status_t queueBufferToClientLocked(const BufferHolder& bufferHolder,
-            nsecs_t presentTime);
+    void queueBufferToClientLocked(const BufferHolder& bufferHolder, nsecs_t currentTime);
 
-    static constexpr char kPendingBufferTraceName[] = "pending_preview_buffers";
-
-    // Camera capture interval for resetting frame spacing between preview sessions
-    static constexpr nsecs_t kSpacingResetIntervalNs = 1000000000L; // 1 second
 
     Camera3OutputStream& mParent;
     sp<ANativeWindow> mConsumer;
     mutable Mutex mLock;
+    Condition mBufferCond;
 
     std::queue<BufferHolder> mPendingBuffers;
     nsecs_t mLastCameraCaptureTime = 0;
     nsecs_t mLastCameraPresentTime = 0;
-
-    // Choreographer related
-    sp<Looper> mLooper;
-    sp<ChoreographerThread> mChoreographerThread;
+    static constexpr nsecs_t kWaitDuration = 5000000LL; // 50ms
+    static constexpr nsecs_t kFrameIntervalThreshold = 80000000LL; // 80ms
+    static constexpr nsecs_t kMaxFrameWaitTime = 33333333LL; // 33ms
 };
 
 }; //namespace camera3
