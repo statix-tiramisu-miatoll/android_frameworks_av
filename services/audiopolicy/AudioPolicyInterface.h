@@ -143,7 +143,8 @@ public:
                                         audio_port_handle_t *selectedDeviceId,
                                         audio_port_handle_t *portId,
                                         std::vector<audio_io_handle_t> *secondaryOutputs,
-                                        output_type_t *outputType) = 0;
+                                        output_type_t *outputType,
+                                        bool *isSpatialized) = 0;
     // indicates to the audio policy manager that the output starts being used by corresponding
     // stream.
     virtual status_t startOutput(audio_port_handle_t portId) = 0;
@@ -531,6 +532,10 @@ public:
                                                 audio_source_t source) = 0;
 
     virtual void onRoutingUpdated() = 0;
+
+    // Used to notify AudioService that an error was encountering when reading
+    // the volume ranges, and that they should be re-initialized
+    virtual void onVolumeRangeInitRequest() = 0;
 
     // Used to notify the sound trigger module that an audio capture is about to
     // take place. This should typically result in any active recognition

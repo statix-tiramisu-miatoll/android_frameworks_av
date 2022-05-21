@@ -136,6 +136,8 @@ public:
     // Whether the device runs into an error state
     bool mDeviceError;
     std::vector<CameraStreamStats> mStreamStats;
+    String16 mUserTag;
+    int mVideoStabilizationMode;
 
     // Constructors
     CameraSessionStats();
