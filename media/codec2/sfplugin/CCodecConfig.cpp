@@ -513,6 +513,9 @@ void CCodecConfig::initializeStandardParams() {
     add(ConfigMapper("cta861.max-fall", C2_PARAMKEY_HDR_STATIC_INFO, "max-fall")
         .limitTo((D::VIDEO | D::IMAGE) & D::RAW));
 
+    add(ConfigMapper(C2_PARAMKEY_HDR_FORMAT, C2_PARAMKEY_HDR_FORMAT, "value")
+        .limitTo((D::VIDEO | D::IMAGE) & D::CODED & D::CONFIG));
+
     add(ConfigMapper(std::string(KEY_FEATURE_) + FEATURE_SecurePlayback,
                      C2_PARAMKEY_SECURE_MODE, "value"));
 
@@ -905,6 +908,9 @@ void CCodecConfig::initializeStandardParams() {
     add(ConfigMapper(KEY_MAX_OUTPUT_CHANNEL_COUNT, C2_PARAMKEY_MAX_CHANNEL_COUNT, "value")
         .limitTo(D::AUDIO & (D::CONFIG | D::PARAM | D::READ)));
 
+    add(ConfigMapper(KEY_CHANNEL_MASK, C2_PARAMKEY_CHANNEL_MASK, "value")
+        .limitTo(D::AUDIO & D::DECODER & D::READ));
+
     add(ConfigMapper(KEY_AAC_SBR_MODE, C2_PARAMKEY_AAC_SBR_MODE, "value")
         .limitTo(D::AUDIO & D::ENCODER & (D::CONFIG | D::PARAM | D::READ))
         .withMapper([](C2Value v) -> C2Value {
@@ -1072,6 +1078,13 @@ status_t CCodecConfig::initialize(
                     C2_PARAMKEY_SURFACE_SCALING_MODE);
         } else {
             addLocalParam(new C2StreamColorAspectsInfo::input(0u), C2_PARAMKEY_COLOR_ASPECTS);
+
+            if (domain.value == C2Component::DOMAIN_VIDEO) {
+                addLocalParam(new C2AndroidStreamAverageBlockQuantizationInfo::output(0u, 0),
+                              C2_PARAMKEY_AVERAGE_QP);
+                addLocalParam(new C2StreamPictureTypeMaskInfo::output(0u, 0),
+                              C2_PARAMKEY_PICTURE_TYPE);
+            }
         }
     }
 
@@ -1612,6 +1625,27 @@ ReflectedParamUpdater::Dict CCodecConfig::getReflectedFormat(
             }
             if (captureRate > 0 && frameRate > 0) {
                 params->setFloat(C2_PARAMKEY_INPUT_TIME_STRETCH, captureRate / frameRate);
+            }
+        }
+
+        // add HDR format for video encoding
+        if (configDomain == IS_CONFIG) {
+            // don't assume here that transfer is set for HDR, only require it for HLG
+            int transfer = 0;
+            params->findInt32(KEY_COLOR_TRANSFER, &transfer);
+
+            int profile;
+            if (params->findInt32(KEY_PROFILE, &profile)) {
+                std::shared_ptr<C2Mapper::ProfileLevelMapper> mapper =
+                    C2Mapper::GetProfileLevelMapper(mCodingMediaType);
+                C2Config::hdr_format_t c2 = C2Config::hdr_format_t::UNKNOWN;
+                if (mapper && mapper->mapHdrFormat(profile, &c2)) {
+                    if (c2 == C2Config::hdr_format_t::HLG &&
+                        transfer != COLOR_TRANSFER_HLG) {
+                        c2 = C2Config::hdr_format_t::UNKNOWN;
+                    }
+                    params->setInt32(C2_PARAMKEY_HDR_FORMAT, c2);
+                }
             }
         }
     }
