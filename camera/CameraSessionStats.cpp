@@ -264,7 +264,8 @@ CameraSessionStats::CameraSessionStats() :
         mInternalReconfigure(0),
         mRequestCount(0),
         mResultErrorCount(0),
-        mDeviceError(false) {}
+        mDeviceError(false),
+        mVideoStabilizationMode(-1) {}
 
 CameraSessionStats::CameraSessionStats(const String16& cameraId,
         int facing, int newCameraState, const String16& clientName,
@@ -281,7 +282,8 @@ CameraSessionStats::CameraSessionStats(const String16& cameraId,
                 mInternalReconfigure(0),
                 mRequestCount(0),
                 mResultErrorCount(0),
-                mDeviceError(0) {}
+                mDeviceError(0),
+                mVideoStabilizationMode(-1) {}
 
 status_t CameraSessionStats::readFromParcel(const android::Parcel* parcel) {
     if (parcel == NULL) {
@@ -375,6 +377,18 @@ status_t CameraSessionStats::readFromParcel(const android::Parcel* parcel) {
         return err;
     }
 
+    String16 userTag;
+    if ((err = parcel->readString16(&userTag)) != OK) {
+        ALOGE("%s: Failed to read user tag!", __FUNCTION__);
+        return BAD_VALUE;
+    }
+
+    int32_t videoStabilizationMode;
+    if ((err = parcel->readInt32(&videoStabilizationMode)) != OK) {
+        ALOGE("%s: Failed to read video stabilization mode from parcel", __FUNCTION__);
+        return err;
+    }
+
     mCameraId = id;
     mFacing = facing;
     mNewCameraState = newCameraState;
@@ -389,6 +403,8 @@ status_t CameraSessionStats::readFromParcel(const android::Parcel* parcel) {
     mResultErrorCount = resultErrorCount;
     mDeviceError = deviceError;
     mStreamStats = std::move(streamStats);
+    mUserTag = userTag;
+    mVideoStabilizationMode = videoStabilizationMode;
 
     return OK;
 }
@@ -471,6 +487,15 @@ status_t CameraSessionStats::writeToParcel(android::Parcel* parcel) const {
         return err;
     }
 
+    if ((err = parcel->writeString16(mUserTag)) != OK) {
+        ALOGE("%s: Failed to write user tag!", __FUNCTION__);
+        return err;
+    }
+
+    if ((err = parcel->writeInt32(mVideoStabilizationMode)) != OK) {
+        ALOGE("%s: Failed to write video stabilization mode!", __FUNCTION__);
+        return err;
+    }
     return OK;
 }
 

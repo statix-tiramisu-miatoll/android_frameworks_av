@@ -20,6 +20,8 @@
 #include <log/log.h>
 #include <utils/NativeHandle.h>
 
+#include <android-base/properties.h>
+
 #include <C2Component.h>
 #include <C2Param.h>
 #include <util/C2InterfaceHelper.h>
@@ -324,7 +326,8 @@ CCodecConfig::CCodecConfig()
     : mInputFormat(new AMessage),
       mOutputFormat(new AMessage),
       mUsingSurface(false),
-      mTunneled(false) { }
+      mTunneled(false),
+      mPushBlankBuffersOnStop(false) { }
 
 void CCodecConfig::initializeStandardParams() {
     typedef Domain D;
@@ -509,6 +512,9 @@ void CCodecConfig::initializeStandardParams() {
         .limitTo((D::VIDEO | D::IMAGE) & D::RAW));
     add(ConfigMapper("cta861.max-fall", C2_PARAMKEY_HDR_STATIC_INFO, "max-fall")
         .limitTo((D::VIDEO | D::IMAGE) & D::RAW));
+
+    add(ConfigMapper(C2_PARAMKEY_HDR_FORMAT, C2_PARAMKEY_HDR_FORMAT, "value")
+        .limitTo((D::VIDEO | D::IMAGE) & D::CODED & D::CONFIG));
 
     add(ConfigMapper(std::string(KEY_FEATURE_) + FEATURE_SecurePlayback,
                      C2_PARAMKEY_SECURE_MODE, "value"));
@@ -902,6 +908,9 @@ void CCodecConfig::initializeStandardParams() {
     add(ConfigMapper(KEY_MAX_OUTPUT_CHANNEL_COUNT, C2_PARAMKEY_MAX_CHANNEL_COUNT, "value")
         .limitTo(D::AUDIO & (D::CONFIG | D::PARAM | D::READ)));
 
+    add(ConfigMapper(KEY_CHANNEL_MASK, C2_PARAMKEY_CHANNEL_MASK, "value")
+        .limitTo(D::AUDIO & D::DECODER & D::READ));
+
     add(ConfigMapper(KEY_AAC_SBR_MODE, C2_PARAMKEY_AAC_SBR_MODE, "value")
         .limitTo(D::AUDIO & D::ENCODER & (D::CONFIG | D::PARAM | D::READ))
         .withMapper([](C2Value v) -> C2Value {
@@ -963,8 +972,6 @@ void CCodecConfig::initializeStandardParams() {
         .limitTo(D::ENCODER & D::VIDEO & D::READ));
 
     /* still to do
-    constexpr char KEY_PUSH_BLANK_BUFFERS_ON_STOP[] = "push-blank-buffers-on-shutdown";
-
        not yet used by MediaCodec, but defined as MediaFormat
     KEY_AUDIO_SESSION_ID // we use "audio-hw-sync"
     KEY_OUTPUT_REORDER_DEPTH
@@ -1071,6 +1078,13 @@ status_t CCodecConfig::initialize(
                     C2_PARAMKEY_SURFACE_SCALING_MODE);
         } else {
             addLocalParam(new C2StreamColorAspectsInfo::input(0u), C2_PARAMKEY_COLOR_ASPECTS);
+
+            if (domain.value == C2Component::DOMAIN_VIDEO) {
+                addLocalParam(new C2AndroidStreamAverageBlockQuantizationInfo::output(0u, 0),
+                              C2_PARAMKEY_AVERAGE_QP);
+                addLocalParam(new C2StreamPictureTypeMaskInfo::output(0u, 0),
+                              C2_PARAMKEY_PICTURE_TYPE);
+            }
         }
     }
 
@@ -1112,15 +1126,21 @@ status_t CCodecConfig::subscribeToConfigUpdate(
         const std::shared_ptr<Codec2Client::Configurable> &configurable,
         const std::vector<C2Param::Index> &indices,
         c2_blocking_t blocking) {
+    static const int32_t kProductFirstApiLevel =
+        base::GetIntProperty<int32_t>("ro.product.first_api_level", 0);
+    static const int32_t kBoardApiLevel =
+        base::GetIntProperty<int32_t>("ro.board.first_api_level", 0);
+    static const int32_t kFirstApiLevel =
+        (kBoardApiLevel != 0) ? kBoardApiLevel : kProductFirstApiLevel;
     mSubscribedIndices.insert(indices.begin(), indices.end());
-    // TODO: enable this when components no longer crash on this config
-    if (mSubscribedIndices.size() != mSubscribedIndicesSize && false) {
-        std::vector<uint32_t> indices;
+    if (mSubscribedIndices.size() != mSubscribedIndicesSize
+            && kFirstApiLevel >= __ANDROID_API_T__) {
+        std::vector<uint32_t> indicesVector;
         for (C2Param::Index ix : mSubscribedIndices) {
-            indices.push_back(ix);
+            indicesVector.push_back(ix);
         }
         std::unique_ptr<C2SubscribedParamIndicesTuning> subscribeTuning =
-            C2SubscribedParamIndicesTuning::AllocUnique(indices);
+            C2SubscribedParamIndicesTuning::AllocUnique(indicesVector);
         std::vector<std::unique_ptr<C2SettingResult>> results;
         c2_status_t c2Err = configurable->config({ subscribeTuning.get() }, blocking, &results);
         if (c2Err != C2_OK && c2Err != C2_BAD_INDEX) {
@@ -1607,6 +1627,27 @@ ReflectedParamUpdater::Dict CCodecConfig::getReflectedFormat(
                 params->setFloat(C2_PARAMKEY_INPUT_TIME_STRETCH, captureRate / frameRate);
             }
         }
+
+        // add HDR format for video encoding
+        if (configDomain == IS_CONFIG) {
+            // don't assume here that transfer is set for HDR, only require it for HLG
+            int transfer = 0;
+            params->findInt32(KEY_COLOR_TRANSFER, &transfer);
+
+            int profile;
+            if (params->findInt32(KEY_PROFILE, &profile)) {
+                std::shared_ptr<C2Mapper::ProfileLevelMapper> mapper =
+                    C2Mapper::GetProfileLevelMapper(mCodingMediaType);
+                C2Config::hdr_format_t c2 = C2Config::hdr_format_t::UNKNOWN;
+                if (mapper && mapper->mapHdrFormat(profile, &c2)) {
+                    if (c2 == C2Config::hdr_format_t::HLG &&
+                        transfer != COLOR_TRANSFER_HLG) {
+                        c2 = C2Config::hdr_format_t::UNKNOWN;
+                    }
+                    params->setInt32(C2_PARAMKEY_HDR_FORMAT, c2);
+                }
+            }
+        }
     }
 
     {   // reflect temporal layering into a binary blob
@@ -1896,7 +1937,9 @@ status_t CCodecConfig::querySupportedParameters(std::vector<std::string> *names)
     names->clear();
     // TODO: expand to standard params
     for (const auto &[key, desc] : mVendorParams) {
-        names->push_back(key);
+        if (desc->isVisible()) {
+            names->push_back(key);
+        }
     }
     return OK;
 }

@@ -30,6 +30,7 @@
 #include <android/hardware/media/c2/1.0/IInputSurface.h>
 #include <android/hardware/media/omx/1.0/IGraphicBufferSource.h>
 #include <android/hardware/media/omx/1.0/IOmx.h>
+#include <android-base/properties.h>
 #include <android-base/stringprintf.h>
 #include <cutils/properties.h>
 #include <gui/IGraphicBufferProducer.h>
@@ -871,6 +872,11 @@ void CCodec::configure(const sp<AMessage> &msg) {
                         }
                         config->mTunneled = true;
                     }
+
+                    int32_t pushBlankBuffersOnStop = 0;
+                    if (msg->findInt32(KEY_PUSH_BLANK_BUFFERS_ON_STOP, &pushBlankBuffersOnStop)) {
+                        config->mPushBlankBuffersOnStop = pushBlankBuffersOnStop == 1;
+                    }
                 }
             }
             setSurface(surface);
@@ -1006,7 +1012,9 @@ void CCodec::configure(const sp<AMessage> &msg) {
             // Query vendor format for Flexible YUV
             std::vector<std::unique_ptr<C2Param>> heapParams;
             C2StoreFlexiblePixelFormatDescriptorsInfo *pixelFormatInfo = nullptr;
-            if (mClient->query(
+            int vendorSdkVersion = base::GetIntProperty(
+                    "ro.vendor.build.version.sdk", android_get_device_api_level());
+            if (vendorSdkVersion >= __ANDROID_API_S__ && mClient->query(
                         {},
                         {C2StoreFlexiblePixelFormatDescriptorsInfo::PARAM_TYPE},
                         C2_MAY_BLOCK,
@@ -1066,6 +1074,17 @@ void CCodec::configure(const sp<AMessage> &msg) {
                 }
             } else {
                 if ((config->mDomain & Config::IS_ENCODER) || !surface) {
+                    if (vendorSdkVersion < __ANDROID_API_S__ &&
+                            (format == COLOR_FormatYUV420Flexible ||
+                             format == COLOR_FormatYUV420Planar ||
+                             format == COLOR_FormatYUV420PackedPlanar ||
+                             format == COLOR_FormatYUV420SemiPlanar ||
+                             format == COLOR_FormatYUV420PackedSemiPlanar)) {
+                        // pre-S framework used to map these color formats into YV12.
+                        // Codecs from older vendor partition may be relying on
+                        // this assumption.
+                        format = HAL_PIXEL_FORMAT_YV12;
+                    }
                     switch (format) {
                         case COLOR_FormatYUV420Flexible:
                             format = COLOR_FormatYUV420Planar;
@@ -1526,6 +1545,9 @@ sp<PersistentSurface> CCodec::CreateOmxInputSurface() {
     using namespace android::hardware::graphics::bufferqueue::V1_0::utils;
     typedef android::hardware::media::omx::V1_0::Status OmxStatus;
     android::sp<IOmx> omx = IOmx::getService();
+    if (omx == nullptr) {
+        return nullptr;
+    }
     typedef android::hardware::graphics::bufferqueue::V1_0::
             IGraphicBufferProducer HGraphicBufferProducer;
     typedef android::hardware::media::omx::V1_0::
@@ -1803,9 +1825,14 @@ void CCodec::start() {
     if (tryAndReportOnError(setRunning) != OK) {
         return;
     }
+
     mCallback->onStartCompleted();
 
-    (void)mChannel->requestInitialInputBuffers();
+    err2 = mChannel->requestInitialInputBuffers();
+    if (err2 != OK) {
+        ALOGE("Initial request for Input Buffers failed");
+        mCallback->onError(err2, ACTION_CODE_FATAL);
+    }
 }
 
 void CCodec::initiateShutdown(bool keepComponentAllocated) {
@@ -1831,7 +1858,13 @@ void CCodec::initiateStop() {
         }
         state->set(STOPPING);
     }
-
+    {
+        Mutexed<std::unique_ptr<Config>>::Locked configLocked(mConfig);
+        const std::unique_ptr<Config> &config = *configLocked;
+        if (config->mPushBlankBuffersOnStop) {
+            mChannel->pushBlankBufferToOutputSurface();
+        }
+    }
     mChannel->reset();
     (new AMessage(kWhatStop, this))->post();
 }
@@ -1917,6 +1950,13 @@ void CCodec::initiateRelease(bool sendCallback /* = true */) {
             config->mInputSurface->disconnect();
             config->mInputSurface = nullptr;
             config->mInputSurfaceDataspace = HAL_DATASPACE_UNKNOWN;
+        }
+    }
+    {
+        Mutexed<std::unique_ptr<Config>>::Locked configLocked(mConfig);
+        const std::unique_ptr<Config> &config = *configLocked;
+        if (config->mPushBlankBuffersOnStop) {
+            mChannel->pushBlankBufferToOutputSurface();
         }
     }
 
@@ -2086,7 +2126,11 @@ void CCodec::signalResume() {
         state->set(RUNNING);
     }
 
-    (void)mChannel->requestInitialInputBuffers();
+    status_t err = mChannel->requestInitialInputBuffers();
+    if (err != OK) {
+        ALOGE("Resume request for Input Buffers failed");
+        mCallback->onError(err, ACTION_CODE_FATAL);
+    }
 }
 
 void CCodec::signalSetParameters(const sp<AMessage> &msg) {

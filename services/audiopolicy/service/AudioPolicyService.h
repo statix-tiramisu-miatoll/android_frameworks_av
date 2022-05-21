@@ -343,6 +343,9 @@ public:
     void onRoutingUpdated();
     void doOnRoutingUpdated();
 
+    void onVolumeRangeInitRequest();
+    void doOnVolumeRangeInitRequest();
+
     /**
      * Spatializer SpatializerPolicyCallback implementation.
      * onCheckSpatializer() sends an event on mOutputCommandThread which executes
@@ -450,7 +453,8 @@ private:
         void onUidGone(uid_t uid, bool disabled) override;
         void onUidIdle(uid_t uid, bool disabled) override;
         void onUidStateChanged(uid_t uid, int32_t procState, int64_t procStateSeq,
-                int32_t capability);
+                int32_t capability) override;
+        void onUidProcAdjChanged(uid_t uid) override;
 
         void addOverrideUid(uid_t uid, bool active) { updateOverrideUid(uid, active, true); }
         void removeOverrideUid(uid_t uid) { updateOverrideUid(uid, false, false); }
@@ -529,7 +533,8 @@ private:
             ROUTING_UPDATED,
             UPDATE_UID_STATES,
             CHECK_SPATIALIZER_OUTPUT, // verify if spatializer effect should be created or moved
-            UPDATE_ACTIVE_SPATIALIZER_TRACKS // Update active track counts on spalializer output
+            UPDATE_ACTIVE_SPATIALIZER_TRACKS, // Update active track counts on spalializer output
+            VOL_RANGE_INIT_REQUEST, // request to reset the volume range indices
         };
 
         AudioCommandThread (String8 name, const wp<AudioPolicyService>& service);
@@ -580,6 +585,7 @@ private:
                     void        updateUidStatesCommand();
                     void        checkSpatializerCommand();
                     void        updateActiveSpatializerTracksCommand();
+                    void        volRangeInitReqCommand();
 
                     void        insertCommand_l(AudioCommand *command, int delayMs = 0);
     private:
@@ -802,6 +808,8 @@ private:
 
         virtual void onRoutingUpdated();
 
+        virtual void onVolumeRangeInitRequest();
+
         virtual audio_unique_id_t newAudioUniqueId(audio_unique_id_use_t use);
 
         void setSoundTriggerCaptureState(bool active) override;
@@ -841,6 +849,7 @@ private:
                                                     audio_patch_handle_t patchHandle,
                                                     audio_source_t source);
                             void      onRoutingUpdated();
+                            void      onVolumeRangeInitRequest();
                             void      setAudioPortCallbacksEnabled(bool enabled);
                             void setAudioVolumeGroupCallbacksEnabled(bool enabled);
 
@@ -970,12 +979,14 @@ private:
                 AudioPlaybackClient(const audio_attributes_t attributes,
                       const audio_io_handle_t io, AttributionSourceState attributionSource,
                             const audio_session_t session, audio_port_handle_t portId,
-                            audio_port_handle_t deviceId, audio_stream_type_t stream) :
+                            audio_port_handle_t deviceId, audio_stream_type_t stream,
+                            bool isSpatialized) :
                     AudioClient(attributes, io, attributionSource, session, portId,
-                        deviceId), stream(stream) {}
+                        deviceId), stream(stream), isSpatialized(isSpatialized)  {}
                 ~AudioPlaybackClient() override = default;
 
         const audio_stream_type_t stream;
+        const bool isSpatialized;
     };
 
     void getPlaybackClientAndEffects(audio_port_handle_t portId,
@@ -1005,7 +1016,16 @@ private:
     void loadAudioPolicyManager();
     void unloadAudioPolicyManager();
 
-    size_t countActiveClientsOnOutput_l(audio_io_handle_t output) REQUIRES(mLock);
+    /**
+     * Returns the number of active audio tracks on the specified output mixer.
+     * The query can be specified to only include spatialized audio tracks or consider
+     * all tracks.
+     * @param output the I/O handle of the output mixer to consider
+     * @param spatializedOnly true if only spatialized tracks should be considered
+     * @return the number of active tracks.
+     */
+    size_t countActiveClientsOnOutput_l(
+        audio_io_handle_t output, bool spatializedOnly = true) REQUIRES(mLock);
 
     mutable Mutex mLock;    // prevents concurrent access to AudioPolicy manager functions changing
                             // device connection state  or routing

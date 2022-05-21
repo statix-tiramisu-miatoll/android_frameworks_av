@@ -518,6 +518,17 @@ binder::Status CameraDeviceClient::submitRequestList(
 
         metadataRequestList.push_back(physicalSettingsList);
         surfaceMapList.push_back(surfaceMap);
+
+        // Save certain CaptureRequest settings
+        if (!request.mUserTag.empty()) {
+            mUserTag = request.mUserTag;
+        }
+        camera_metadata_entry entry =
+                physicalSettingsList.begin()->metadata.find(
+                        ANDROID_CONTROL_VIDEO_STABILIZATION_MODE);
+        if (entry.count == 1) {
+            mVideoStabilizationMode = entry.data.u8[0];
+        }
     }
     mRequestIdCounter++;
 
@@ -717,8 +728,10 @@ binder::Status CameraDeviceClient::isSessionConfigurationSupported(
     }
 
     *status = false;
+    camera3::metadataGetter getMetadata = [this](const String8 &id, bool /*overrideForPerfClass*/) {
+          return mDevice->infoPhysical(id);};
     ret = mProviderManager->isSessionConfigurationSupported(mCameraIdStr.string(),
-            sessionConfiguration, mOverrideForPerfClass, status);
+            sessionConfiguration, mOverrideForPerfClass, getMetadata, status);
     switch (ret) {
         case OK:
             // Expected, do nothing.
@@ -1964,7 +1977,8 @@ void CameraDeviceClient::notifyIdle(
     if (remoteCb != 0) {
         remoteCb->onDeviceIdle();
     }
-    Camera2ClientBase::notifyIdle(requestCount, resultErrorCount, deviceError, streamStats);
+    Camera2ClientBase::notifyIdleWithUserTag(requestCount, resultErrorCount, deviceError,
+            streamStats, mUserTag, mVideoStabilizationMode);
 }
 
 void CameraDeviceClient::notifyShutter(const CaptureResultExtras& resultExtras,
