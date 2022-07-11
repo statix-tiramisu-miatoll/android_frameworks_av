@@ -1,6 +1,10 @@
 {
   "name": "com.android.media",
-  "version": 330513000,
+
+  // Placeholder module version to be replaced during build.
+  // Do not change!
+  "version": 330910000,
+
   "requireNativeLibs": [
     "libandroid.so",
     "libbinder_ndk.so",
