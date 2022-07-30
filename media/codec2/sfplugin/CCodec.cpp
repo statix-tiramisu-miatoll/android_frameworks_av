@@ -1898,6 +1898,7 @@ void CCodec::stop() {
         comp = state->comp;
     }
     status_t err = comp->stop();
+    mChannel->stopUseOutputSurface();
     if (err != C2_OK) {
         // TODO: convert err into status_t
         mCallback->onError(UNKNOWN_ERROR, ACTION_CODE_FATAL);
@@ -1971,6 +1972,7 @@ void CCodec::initiateRelease(bool sendCallback /* = true */) {
     }
 
     mChannel->reset();
+    mChannel->stopUseOutputSurface();
     // thiz holds strong ref to this while the thread is running.
     sp<CCodec> thiz(this);
     std::thread([thiz, sendCallback] { thiz->release(sendCallback); }).detach();
